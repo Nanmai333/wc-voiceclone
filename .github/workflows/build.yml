@@ -1,0 +1,33 @@
+name: Build Tweak
+
+# 推送代码 或 手动触发时自动编译
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Theos
+        run: |
+          export THEOS=$HOME/theos
+          git clone --recursive --depth=1 https://github.com/theos/theos.git $THEOS
+          git clone --depth=1 https://github.com/theos/sdks.git $THEOS/sdks
+          echo "THEOS=$THEOS" >> $GITHUB_ENV
+
+      - name: Build package
+        run: |
+          cd wcvoiceclone
+          make package FINALPACKAGE=1
+          ls -la packages/
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: WCVoiceClone-deb
+          path: wcvoiceclone/packages/*.deb
