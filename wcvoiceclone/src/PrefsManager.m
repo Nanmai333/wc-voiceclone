@@ -24,7 +24,8 @@ static id _read(NSString *key) {
     _modelId   = [_read(@"modelId") isKindOfClass:NSString.class] ? _read(@"modelId") : @"";
     id tm      = _read(@"ttsModel");
     // 默认用免费开发档，不消耗 API 积分
-    _ttsModel  = [tm isKindOfClass:NSString.class] && tm.length > 0 ? tm : @"s2.1-pro-free";
+    _ttsModel  = ([tm isKindOfClass:NSString.class] && [(NSString *)tm length] > 0)
+                 ? tm : @"s2.1-pro-free";
     id fb      = _read(@"floatBallEnabled");
     _floatBallEnabled = fb ? [fb boolValue] : YES;
 }
