@@ -15,12 +15,11 @@ jobs:
 
       - name: Install deps
         run: |
-          sudo apt-get update -qq || true
-          sudo apt-get install -y -qq ldid xz-utils || {
-            git clone --depth=1 https://github.com/ProcursusTeam/ldid.git /tmp/ldid
-            make -C /tmp/ldid -j4
-            sudo make -C /tmp/ldid install PREFIX=/usr/local
-          }
+          # ldid (伪签名工具) 用官方预编译版，Ubuntu 源里没有
+          sudo curl -sL -o /usr/local/bin/ldid \
+            https://github.com/ProcursusTeam/ldid/releases/latest/download/ldid_linux_x86_64
+          sudo chmod +x /usr/local/bin/ldid
+          ldid -V || true
 
       - name: Setup Theos
         run: |
