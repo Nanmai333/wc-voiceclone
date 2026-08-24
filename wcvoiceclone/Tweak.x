@@ -8,6 +8,7 @@
 #import "src/SilkBridge.h"
 
 #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
 // 微信聊天页基类（Logos 只会前置声明，这里补全继承关系）
 @interface BaseMsgContentViewController : UIViewController
