@@ -382,9 +382,16 @@ static void WCVAddBallIfNeeded(UIViewController *vc) {
         tf.placeholder = @"声音模型 ID (reference_id)";
         tf.text = prefs.modelId;
     }];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *tf) {
+        tf.placeholder = @"引擎型号 (s2.1-pro-free=免费)";
+        tf.text = prefs.ttsModel ?: @"s2.1-pro-free";
+        tf.clearButtonMode = UITextFieldViewModeAlways;
+    }];
     [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
         prefs.apiKey = alert.textFields[0].text ?: @"";
         prefs.modelId = alert.textFields[1].text ?: @"";
+        NSString *m = alert.textFields[2].text ?: @"";
+        prefs.ttsModel = m.length > 0 ? m : @"s2.1-pro-free";
         [prefs save];
     }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];

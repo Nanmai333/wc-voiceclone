@@ -9,6 +9,8 @@
 @property (nonatomic, copy) NSString *apiKey;
 /// 克隆声音模型 ID (reference_id)
 @property (nonatomic, copy) NSString *modelId;
+/// TTS 引擎型号: s1 / s2-pro / s2.1-pro / s2.1-pro-free(免费)
+@property (nonatomic, copy) NSString *ttsModel;
 /// 聊天页悬浮球开关
 @property (nonatomic, assign) BOOL floatBallEnabled;
 

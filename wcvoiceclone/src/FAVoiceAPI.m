@@ -55,6 +55,9 @@ static NSString * const kBaseURL = @"https://api.fish.audio";
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
     req.HTTPMethod = @"POST";
     [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    // 模型档位：s2.1-pro-free 免费开发档，不扣 API 积分
+    NSString *model = [WCPrefsManager shared].ttsModel;
+    if (model.length > 0) [req setValue:model forHTTPHeaderField:@"model"];
     NSDictionary *body = @{@"text": text ?: @"",
                            @"reference_id": modelId,
                            @"format": @"pcm",        // 直接要 PCM，免得插件里再解码 mp3

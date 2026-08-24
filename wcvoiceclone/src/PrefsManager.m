@@ -22,6 +22,9 @@ static id _read(NSString *key) {
 - (void)reload {
     _apiKey    = [_read(@"apiKey") isKindOfClass:NSString.class] ? _read(@"apiKey") : @"";
     _modelId   = [_read(@"modelId") isKindOfClass:NSString.class] ? _read(@"modelId") : @"";
+    id tm      = _read(@"ttsModel");
+    // 默认用免费开发档，不消耗 API 积分
+    _ttsModel  = [tm isKindOfClass:NSString.class] && tm.length > 0 ? tm : @"s2.1-pro-free";
     id fb      = _read(@"floatBallEnabled");
     _floatBallEnabled = fb ? [fb boolValue] : YES;
 }
@@ -29,6 +32,7 @@ static id _read(NSString *key) {
 - (void)save {
     NSDictionary *all = @{@"apiKey": _apiKey ?: @"",
                           @"modelId": _modelId ?: @"",
+                          @"ttsModel": _ttsModel ?: @"s2.1-pro-free",
                           @"floatBallEnabled": @(_floatBallEnabled)};
     [all enumerateKeysAndObjectsUsingBlock:^(NSString *key, id val, BOOL *stop) {
         CFPreferencesSetAppValue((__bridge CFStringRef)key, (__bridge CFTypeRef)val, (__bridge CFStringRef)kDomain);
