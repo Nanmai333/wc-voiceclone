@@ -13,12 +13,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install deps
+        run: |
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq ldid xz-utils || {
+            git clone --depth=1 https://github.com/ProcursusTeam/ldid.git /tmp/ldid
+            make -C /tmp/ldid -j4
+            sudo make -C /tmp/ldid install PREFIX=/usr/local
+          }
+
       - name: Setup Theos
         run: |
           export THEOS=$HOME/theos
           git clone --recursive --depth=1 https://github.com/theos/theos.git $THEOS
           rm -rf $THEOS/sdks
           git clone --depth=1 https://github.com/theos/sdks.git $THEOS/sdks
+          # 官方 install-theos 同款 iOS 交叉工具链
+          curl -sL https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-x86_64.tar.xz | tar -xJ -C $THEOS/toolchain/
+          ls $THEOS/toolchain/linux/iphone/bin/clang
           echo "THEOS=$THEOS" >> $GITHUB_ENV
 
       - name: Build package
