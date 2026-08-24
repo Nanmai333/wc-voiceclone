@@ -10,6 +10,14 @@
 
 // 微信聊天页基类（Logos 只会前置声明，这里补全继承关系）
 @interface BaseMsgContentViewController : UIViewController
+// 以下是 %new 运行时添加的方法，需提前声明才能编译
+- (void)wcv_ballTapped;
+- (void)wcv_promptTTS;
+- (void)wcv_synthAndSend:(NSString *)text;
+- (void)wcv_replaceHud:(UIViewController *)hud message:(NSString *)message;
+- (void)wcv_testAPI;
+- (void)wcv_openSettings;
+- (void)wcv_debugProbe;
 @end
 
 #pragma mark - 工具函数
