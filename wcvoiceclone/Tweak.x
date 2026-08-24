@@ -37,12 +37,59 @@ static void WCVSafeSet(id obj, NSArray *keys, id value) {
     }
 }
 
-// 当前聊天对象的 wxid
+// 判断字符串是否像微信用户 ID（wxid_xx / 自定义号 / xxx@chatroom）
+static BOOL WCVLooksLikeWxId(id v) {
+    if (![v isKindOfClass:NSString.class]) return NO;
+    NSString *s = (NSString *)v;
+    if (s.length < 4 || s.length > 64) return NO;
+    static NSPredicate *p;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        p = [NSPredicate predicateWithFormat:@"SELF MATCHES %@",
+             @"^[A-Za-z][A-Za-z0-9_-]{3,62}(@chatroom|@openim)?$"];
+    });
+    return [p evaluateWithObject:s];
+}
+
+// 当前聊天对象的 wxid：先猜常见字段名，再全量扫描 ivar 自动发现
 static NSString *WCVCurrentChatUser(UIViewController *vc) {
-    for (NSString *key in @[@"m_nsChatUsr", @"m_nsToUsr"]) {
+    NSString *own = WCVOwnWxId();
+
+    // 1. 常见字段名（历史版本）
+    NSArray<NSString *> *keys = @[@"m_nsChatUsr", @"m_nsToUsr", @"chatUsr",
+                                  @"m_chatUsr", @"nsChatUsr", @"chatUserName",
+                                  @"m_nsChatUserName", @"m_szChatUsr"];
+    for (NSString *key in keys) {
         id v = nil;
         @try { v = [vc valueForKey:key]; } @catch (NSException *e) {}
-        if ([v isKindOfClass:NSString.class] && [(NSString *)v length] > 0) return v;
+        if (WCVLooksLikeWxId(v) && ![v isEqualToString:own]) return v;
+    }
+
+    // 2. 扫描类及父类所有 ivar；优先名字带 chat/to/talker 的
+    Class c = [vc class];
+    while (c) {
+        unsigned int n = 0;
+        Ivar *ivars = class_copyIvarList(c, &n);
+        NSString *fallback = nil;
+        for (unsigned int i = 0; i < n; i++) {
+            const char *type = ivar_getTypeEncoding(ivars[i]);
+            if (!type || type[0] != '@') continue;   // 只要对象类型字段
+            id v = nil;
+            @try { v = object_getIvar(vc, ivars[i]); } @catch (NSException *e) { continue; }
+            if (!WCVLooksLikeWxId(v) || [v isEqualToString:own]) continue;
+            const char *iname = ivar_getName(ivars[i]);
+            NSString *lower = [NSString stringWithUTF8String:iname].lowercaseString;
+            NSLog(@"[WCVoiceClone] candidate ivar %s = %@", iname, v);
+            if ([lower containsString:@"chat"] || [lower containsString:@"touser"] ||
+                [lower containsString:@"talker"]) {
+                free(ivars);
+                return v;
+            }
+            if (!fallback) fallback = v;
+        }
+        free(ivars);
+        if (fallback) return fallback;
+        c = class_getSuperclass(c);
     }
     return nil;
 }
@@ -83,68 +130,136 @@ static NSString *WCVOwnWxId(void) {
 // 用剪贴板友好的可变日志收集发送过程
 typedef void (^WCVDoneBlock)(BOOL ok, NSString *log);
 
-// 发送语音消息：多版本兼容尝试
+// 发送语音消息：优先已知方法名，失败则运行时扫描所有消息服务类自动适配
 static BOOL WCVTrySendVoice(NSData *silk, NSString *toUser, unsigned int durationSec, NSMutableString *log) {
     Class msgWrapClass = NSClassFromString(@"CMessageWrap");
-    Class msgMgrClass  = NSClassFromString(@"CMessageMgr");
     Class mmCenter     = NSClassFromString(@"MMServiceCenter");
-    if (!msgWrapClass || !msgMgrClass || !mmCenter) {
-        [log appendFormat:@"缺少核心类 (%@/%@/%@)\n", msgWrapClass, msgMgrClass, mmCenter];
+    if (!msgWrapClass || !mmCenter) {
+        [log appendString:@"缺少核心类 CMessageWrap/MMServiceCenter\n"];
         return NO;
     }
     id center = [mmCenter performSelector:NSSelectorFromString(@"defaultCenter")];
-    id mgr = [center performSelector:NSSelectorFromString(@"getService:") withObject:msgMgrClass];
-    if (!mgr) { [log appendString:@"拿不到 CMessageMgr 服务\n"]; return NO; }
+    if (!center) { [log appendString:@"拿不到 MMServiceCenter\n"]; return NO; }
 
     id msg = [[msgWrapClass alloc] init];
     WCVSafeSet(msg, @[@"m_uiMessageType", @"m_iMessageType"], @34);          // 34=语音
     WCVSafeSet(msg, @[@"m_nsFromUsr"], WCVOwnWxId() ?: @"");
-    WCVSafeSet(msg, @[@"m_nsToUsr", @"m_nsChatUsr"], toUser);
+    WCVSafeSet(msg, @[@"m_nsToUsr", @"m_nsTalker", @"m_nsChatUsr"], toUser);
     WCVSafeSet(msg, @[@"m_nsContent"], @"[语音]");
     WCVSafeSet(msg, @[@"m_dtVoice", @"nativeVoiceData"], silk);
     WCVSafeSet(msg, @[@"m_nVoiceTime", @"m_nTotalLen", @"m_uiVoiceTime"], @(durationSec));
     WCVSafeSet(msg, @[@"m_uiCreateTime"], @((unsigned int)[NSDate date].timeIntervalSince1970));
 
-    NSArray<NSString *> *candidates = @[
-        @"AddLocalMsg:MsgWrap:",
-        @"AddLocalMsg:",
-        @"AddMsg:MsgWrap:",
-        @"AddMsg:",
-        @"AddSendingMsg:",
-        @"AddSendingMsg:MsgWrap:",
-        @"MessageReturn:MessageInfo:",
-    ];
-    for (NSString *name in candidates) {
-        SEL sel = NSSelectorFromString(name);
-        if (![mgr respondsToSelector:sel]) continue;
-        NSMethodSignature *sig = [mgr methodSignatureForSelector:sel];
-        if (!sig) continue;
-        NSInteger nArgs = sig.numberOfArguments - 2; // 真实参数个数
-        @try {
-            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-            [inv setTarget:mgr];
-            [inv setSelector:sel];
-            if (nArgs == 1) {
-                [inv setArgument:&msg atIndex:2];
-            } else if (nArgs == 2) {
-                [inv setArgument:&toUser atIndex:2];
-                [inv setArgument:&msg atIndex:3];
-            } else if (nArgs == 3) {
-                [inv setArgument:&toUser atIndex:2];
-                [inv setArgument:&msg atIndex:3];
-                unsigned int d = durationSec;
-                [inv setArgument:&d atIndex:4];
-            } else {
-                continue;
+    // ---------- 第一轮：历史版本已知方法名 ----------
+    NSArray<NSString *> *knownClasses = @[@"CMessageMgr", @"CMessageService", @"MessageService"];
+    for (NSString *clsName in knownClasses) {
+        Class cls = NSClassFromString(clsName);
+        if (!cls) continue;
+        id svc = [center performSelector:NSSelectorFromString(@"getService:") withObject:cls];
+        if (!svc) continue;
+        NSArray<NSString *> *candidates = @[
+            @"AddLocalMsg:MsgWrap:", @"AddLocalMsg:",
+            @"AddMsg:MsgWrap:", @"AddMsg:",
+            @"AddSendingMsg:", @"AddSendingMsg:MsgWrap:",
+        ];
+        for (NSString *name in candidates) {
+            SEL sel = NSSelectorFromString(name);
+            if (![svc respondsToSelector:sel]) continue;
+            NSMethodSignature *sig = [svc methodSignatureForSelector:sel];
+            NSInteger nArgs = sig.numberOfArguments - 2;
+            @try {
+                NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                [inv setTarget:svc];
+                [inv setSelector:sel];
+                if (nArgs == 1) {
+                    [inv setArgument:&msg atIndex:2];
+                } else if (nArgs == 2) {
+                    [inv setArgument:&toUser atIndex:2];
+                    [inv setArgument:&msg atIndex:3];
+                } else if (nArgs == 3) {
+                    [inv setArgument:&toUser atIndex:2];
+                    [inv setArgument:&msg atIndex:3];
+                    void *d = &durationSec;
+                    [inv setArgument:d atIndex:4];
+                } else { continue; }
+                [inv invoke];
+                [log appendFormat:@"✅ [%@ %@] 调用成功\n", clsName, name];
+                return YES;
+            } @catch (NSException *e) {
+                [log appendFormat:@"⚠️ [%@ %@] 异常: %@\n", clsName, name, e.reason];
             }
-            [inv invoke];
-            [log appendFormat:@"✅ 通过 [%@ %@] 调用成功\n", msgMgrClass, name];
-            return YES;
-        } @catch (NSException *e) {
-            [log appendFormat:@"⚠️ %@ 抛异常: %@\n", name, e.reason];
         }
     }
-    [log appendString:@"❌ 候选发送方法都不可用。点悬浮球 → 🐞调试，探测本版微信的真实方法名。\n"];
+
+    // ---------- 第二轮：运行时扫描所有 *MessageMgr*/​*MessageService* 类 ----------
+    [log appendString:@"…已知方法不可用，启动运行时扫描\n"];
+    unsigned int clsCount = 0;
+    Class *allClasses = objc_copyClassList(&clsCount);
+    NSMutableArray<Class> *mgrClasses = [NSMutableArray array];
+    for (unsigned int i = 0; i < clsCount; i++) {
+        const char *n = class_getName(allClasses[i]);
+        if (strstr(n, "MessageMgr") || strstr(n, "MessageService")) {
+            [mgrClasses addObject:allClasses[i]];
+        }
+    }
+    free(allClasses);
+
+    SEL centerSel = NSSelectorFromString(@"defaultCenter");
+    SEL getServiceSel = NSSelectorFromString(@"getService:");
+    for (Class cls in mgrClasses) {
+        if (![center respondsToSelector:getServiceSel]) break;
+        id svc = nil;
+        @try { svc = [center performSelector:getServiceSel withObject:cls]; } @catch (NSException *e) {}
+        if (!svc) continue;
+
+        unsigned int mCount = 0;
+        Method *methods = class_copyMethodList(cls, &mCount);
+        for (unsigned int j = 0; j < mCount; j++) {
+            NSString *name = NSStringFromSelector(method_getName(methods[j]));
+            BOOL hit = [name rangeOfString:@"ocalMsg"].location != NSNotFound ||
+                       [name rangeOfString:@"ddMsg"].location   != NSNotFound ||
+                       [name rangeOfString:@"endVoice"].location != NSNotFound;
+            if (!hit) continue;
+            // 排除查询/删除/更新类
+            if ([name containsString:@"etMsg"] || [name containsString:@"emove"] ||
+                [name containsString:@"elete"] || [name containsString:@"pdate"]) continue;
+
+            SEL sel = NSSelectorFromString(name);
+            NSMethodSignature *sig = [svc methodSignatureForSelector:sel];
+            if (!sig) continue;
+            NSInteger nArgs = sig.numberOfArguments - 2;
+            if (nArgs < 1 || nArgs > 4) continue;
+            const char *t2 = [sig getArgumentTypeAtIndex:2];
+            if (!t2 || t2[0] != '@') continue;      // 首参必须是对象
+
+            @try {
+                NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                [inv setTarget:svc];
+                [inv setSelector:sel];
+                if (nArgs == 1) {
+                    [inv setArgument:&msg atIndex:2];
+                } else if (nArgs >= 2) {
+                    [inv setArgument:&toUser atIndex:2];
+                    [inv setArgument:&msg atIndex:3];
+                    if (nArgs >= 3) {
+                        void *d = &durationSec;
+                        [inv setArgument:d atIndex:4];
+                    }
+                    if (nArgs >= 4) {
+                        id nilObj = nil;
+                        [inv setArgument:&nilObj atIndex:5];
+                    }
+                }
+                [inv invoke];
+                [log appendFormat:@"✅ 运行时匹配成功: [%@ %@]\n", NSStringFromClass(cls), name];
+                free(methods);
+                return YES;
+            } @catch (NSException *e) { /* 试下一个 */ }
+        }
+        free(methods);
+    }
+
+    [log appendString:@"❌ 自动匹配也失败了。\n请点 🐞调试 导出本版微信的方法名和字段发我，我手动适配。\n"];
     return NO;
 }
 
@@ -417,6 +532,27 @@ static void WCVAddBallIfNeeded(UIViewController *vc) {
             }
         }
         free(methods);
+    }
+    // 当前聊天页对象的所有字符串字段（用于定位 wxid 存在哪个属性里）
+    [report appendString:@"\n【当前聊天页字段】\n"];
+    Class c = [self class];
+    while (c && report.length < 6000) {
+        unsigned int n = 0;
+        Ivar *ivars = class_copyIvarList(c, &n);
+        for (unsigned int i = 0; i < n; i++) {
+            const char *t = ivar_getTypeEncoding(ivars[i]);
+            if (!t || t[0] != '@') continue;
+            id v = nil;
+            @try { v = object_getIvar(self, ivars[i]); } @catch (NSException *e) { continue; }
+            if ([v isKindOfClass:NSString.class]) {
+                NSString *s = (NSString *)v;
+                if (s.length > 0 && s.length < 80 && [s rangeOfString:@"\n"].location == NSNotFound) {
+                    [report appendFormat:@"  %s = %@\n", ivar_getName(ivars[i]), s];
+                }
+            }
+        }
+        free(ivars);
+        c = class_getSuperclass(c);
     }
     UIPasteboard.generalPasteboard.string = report;
     NSString *preview = report.length > 900 ? [[report substringToIndex:900] stringByAppendingString:@"…(完整内容已复制到剪贴板)"] : report;
