@@ -6,6 +6,12 @@
 #import "src/FAVoiceAPI.h"
 #import "src/SilkBridge.h"
 
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+
+// 微信聊天页基类（Logos 只会前置声明，这里补全继承关系）
+@interface BaseMsgContentViewController : UIViewController
+@end
+
 #pragma mark - 工具函数
 
 // 防御性写入对象属性：字段名列表逐个尝试，不存在就跳过
@@ -22,8 +28,8 @@ static void WCVSafeSet(id obj, NSArray *keys, id value) {
 static NSString *WCVCurrentChatUser(UIViewController *vc) {
     for (NSString *key in @[@"m_nsChatUsr", @"m_nsToUsr"]) {
         id v = nil;
-        @try { v = [vc valueForKey:key]; } @catch (_) {}
-        if ([v isKindOfClass:NSString.class] && v.length > 0) return v;
+        @try { v = [vc valueForKey:key]; } @catch (NSException *e) {}
+        if ([v isKindOfClass:NSString.class] && [(NSString *)v length] > 0) return v;
     }
     return nil;
 }
@@ -39,7 +45,7 @@ static NSString *WCVOwnWxId(void) {
         if (!svcClass) continue;
         id mgr = nil;
         @try { mgr = [center performSelector:NSSelectorFromString(@"getService:") withObject:svcClass]; }
-        @catch (_) {}
+        @catch (NSException *e) {}
         if (!mgr) continue;
         // 直接在 mgr 上找，或在 selfContact 上找
         NSArray<NSArray<NSString *> *> *paths = @[
@@ -52,10 +58,10 @@ static NSString *WCVOwnWxId(void) {
             BOOL ok = YES;
             for (NSString *key in path) {
                 id next = nil;
-                @try { next = [v valueForKey:key]; } @catch (_) { ok = NO; break; }
+                @try { next = [v valueForKey:key]; } @catch (NSException *e) { ok = NO; break; }
                 v = next;
             }
-            if (ok && [v isKindOfClass:NSString.class] && v.length > 0) return v;
+            if (ok && [v isKindOfClass:NSString.class] && [(NSString *)v length] > 0) return v;
         }
     }
     return nil;
