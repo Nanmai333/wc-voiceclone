@@ -24,6 +24,8 @@
 
 static void WCVAddBallIfNeeded(UIViewController *vc);
 static void WCVShowBanner(UIWindow *window);
+static NSString *WCVOwnWxId(void);
+static BOOL WCVLooksLikeWxId(id v);
 
 #pragma mark - 工具函数
 
@@ -204,7 +206,6 @@ static BOOL WCVTrySendVoice(NSData *silk, NSString *toUser, unsigned int duratio
     }
     free(allClasses);
 
-    SEL centerSel = NSSelectorFromString(@"defaultCenter");
     SEL getServiceSel = NSSelectorFromString(@"getService:");
     for (Class cls in mgrClasses) {
         if (![center respondsToSelector:getServiceSel]) break;
