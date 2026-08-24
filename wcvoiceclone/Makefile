@@ -12,6 +12,6 @@ WCVoiceClone_FILES = Tweak.x \
 	$(wildcard src/silk/src/*.c)
 
 WCVoiceClone_CFLAGS = -fobjc-arc -Isrc/silk/interface -DHAVE_SILK
-WCVoiceClone_FRAMEWORKS = UIKit Foundation AVFoundation CoreFoundation AudioToolbox
+WCVoiceClone_FRAMEWORKS = UIKit Foundation CoreFoundation
 
 include $(THEOS_MAKE_PATH)/tweak.mk

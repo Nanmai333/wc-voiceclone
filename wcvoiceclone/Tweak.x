@@ -244,7 +244,7 @@ static BOOL WCVTrySendVoice(NSData *silk, NSString *toUser, unsigned int duratio
         }
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
             NSError *silkErr = nil;
-            NSData *silk = [WCSilkBridge silkDataFromAudio:data error:&silkErr];
+            NSData *silk = [WCSilkBridge silkFromPCM:data sampleRateHz:24000 error:&silkErr];
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (!silk) {
                     [self wcv_replaceHud:hud message:[NSString stringWithFormat:@"❌ SILK 编码失败：%@", silkErr.localizedDescription]];

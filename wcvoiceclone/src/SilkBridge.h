@@ -1,9 +1,9 @@
 #import <Foundation/Foundation.h>
 
-/// 音频格式转换：任意音频(mp3/wav/m4a) → PCM → 微信语音用的 SILK v3
+/// PCM(s16le 单声道) → 微信语音用的 SILK v3
 @interface WCSilkBridge : NSObject
 
-/// 把 Fish Audio 返回的 mp3 数据转成微信可发送的 silk 格式 (24000Hz 单声道)
-+ (NSData *)silkDataFromAudio:(NSData *)audioData error:(NSError **)error;
+/// 把 Fish Audio 返回的 PCM 数据 (format=pcm, sample_rate=24000) 编码成 silk
++ (NSData *)silkFromPCM:(NSData *)pcmData sampleRateHz:(int)hz error:(NSError **)error;
 
 @end

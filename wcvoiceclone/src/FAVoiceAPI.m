@@ -57,7 +57,8 @@ static NSString * const kBaseURL = @"https://api.fish.audio";
     [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
     NSDictionary *body = @{@"text": text ?: @"",
                            @"reference_id": modelId,
-                           @"format": @"mp3",
+                           @"format": @"pcm",        // 直接要 PCM，免得插件里再解码 mp3
+                           @"sample_rate": @24000,   // 微信 silk 标准采样率
                            @"temperature": @0.7,
                            @"top_p": @0.7,
                            @"normalize": @YES,
