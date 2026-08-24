@@ -2,6 +2,7 @@
 // Theos/Logos 越狱插件 (个人自用)
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#include <string.h>
 #import "src/PrefsManager.h"
 #import "src/FAVoiceAPI.h"
 #import "src/SilkBridge.h"
@@ -19,6 +20,9 @@
 - (void)wcv_openSettings;
 - (void)wcv_debugProbe;
 @end
+
+static void WCVAddBallIfNeeded(UIViewController *vc);
+static void WCVShowBanner(UIWindow *window);
 
 #pragma mark - 工具函数
 
@@ -143,14 +147,70 @@ static BOOL WCVTrySendVoice(NSData *silk, NSString *toUser, unsigned int duratio
     return NO;
 }
 
-#pragma mark - Hook 主入口
+#pragma mark - 自检横幅 + 运行时适配不同微信版本的聊天类
 
-%hook BaseMsgContentViewController
+static void WCVShowBanner(UIWindow *window) {
+    UIView *banner = [[UIView alloc] initWithFrame:CGRectMake(20, 90, window.bounds.size.width - 40, 44)];
+    banner.backgroundColor = [UIColor colorWithWhite:0 alpha:0.85];
+    banner.layer.cornerRadius = 12;
+    banner.userInteractionEnabled = NO;
+    UILabel *label = [[UILabel alloc] initWithFrame:banner.bounds];
+    label.text = @"🎤 WCVoiceClone 已注入";
+    label.textColor = UIColor.whiteColor;
+    label.textAlignment = NSTextAlignmentCenter;
+    label.font = [UIFont systemFontOfSize:15];
+    [banner addSubview:label];
+    [window addSubview:banner];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ [banner removeFromSuperview]; });
+}
 
-- (void)viewDidAppear:(BOOL)animated {
-    %orig;
+// 运行时扫描所有名字带 MsgContentViewController 的类，挂钩 viewDidAppear:
+// 这样不管哪个微信版本、类名怎么变，都能挂上悬浮球
+static NSMutableDictionary<NSString *, NSValue *> *WCVOrigIMPs = nil;
+
+static void wcv_swz_viewDidAppear(id self, SEL _cmd, BOOL animated) {
+    Class c = [self class];
+    IMP orig = NULL;
+    while (c) { // 找最近的被挂钩祖先类，调用原实现
+        NSValue *v = WCVOrigIMPs[NSStringFromClass(c)];
+        if (v) { orig = (IMP)[v pointerValue]; break; }
+        c = class_getSuperclass(c);
+    }
+    if (orig) ((void (*)(id, SEL, BOOL))orig)(self, _cmd, animated);
+    @try { WCVAddBallIfNeeded((UIViewController *)self); } @catch (NSException *e) {}
+}
+
+static void WCVRuntimeHookChatVCs(void) {
+    WCVOrigIMPs = [NSMutableDictionary new];
+    unsigned int count = 0;
+    Class *classes = objc_copyClassList(&count);
+    SEL sel = NSSelectorFromString(@"viewDidAppear:");
+    int hooked = 0;
+    for (unsigned int i = 0; i < count; i++) {
+        const char *n = class_getName(classes[i]);
+        if (!strstr(n, "MsgContentViewController")) continue;
+        Method m = class_getInstanceMethod(classes[i], sel);
+        if (!m) continue;
+        IMP cur = method_getImplementation(m);
+        if (cur == (IMP)wcv_swz_viewDidAppear) continue;
+        NSString *clsName = NSStringFromClass(classes[i]);
+        if (WCVOrigIMPs[clsName]) continue;
+        WCVOrigIMPs[clsName] = [NSValue valueWithPointer:cur];
+        method_setImplementation(m, (IMP)wcv_swz_viewDidAppear);
+        hooked++;
+        NSLog(@"[WCVoiceClone] hooked chat VC: %s", n);
+    }
+    free(classes);
+    NSLog(@"[WCVoiceClone] runtime-hooked %d chat VC classes", hooked);
+}
+
+#pragma mark - 悬浮球添加逻辑（供多个入口复用）
+
+static void WCVAddBallIfNeeded(UIViewController *vc) {
     if (![WCPrefsManager shared].floatBallEnabled) return;
-    UIView *rootView = self.view;
+    UIView *rootView = vc.view;
+    if (!rootView) return;
 
     // 避免重复添加
     for (UIView *sub in rootView.subviews) {
@@ -167,8 +227,17 @@ static BOOL WCVTrySendVoice(NSData *silk, NSString *toUser, unsigned int duratio
     ball.frame = CGRectMake(rootView.bounds.size.width - 64,
                             rootView.bounds.size.height - 180, 44, 44);
     ball.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleTopMargin;
-    [ball addTarget:self action:@selector(wcv_ballTapped) forControlEvents:UIControlEventTouchUpInside];
+    [ball addTarget:vc action:@selector(wcv_ballTapped) forControlEvents:UIControlEventTouchUpInside];
     [rootView addSubview:ball];
+}
+
+#pragma mark - Hook 主入口
+
+%hook BaseMsgContentViewController
+
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    WCVAddBallIfNeeded(self);
 }
 
 %new
@@ -353,4 +422,19 @@ static BOOL WCVTrySendVoice(NSData *silk, NSString *toUser, unsigned int duratio
 
 %ctor {
     NSLog(@"[WCVoiceClone] loaded 🎤");
+    WCVRuntimeHookChatVCs();  // 自动适配各版本微信的聊天页类名
+    // 自检横幅：dylib 若被成功注入，开微信约 4 秒后顶部显示一次
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        UIWindow *w = [UIApplication sharedApplication].keyWindow;
+        if (!w) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                UIWindow *w2 = [UIApplication sharedApplication].keyWindow;
+                if (w2) WCVShowBanner(w2);
+            });
+            return;
+        }
+        WCVShowBanner(w);
+    });
 }

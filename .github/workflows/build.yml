@@ -32,14 +32,21 @@ jobs:
           ls $THEOS/toolchain/linux/iphone/bin/clang
           echo "THEOS=$THEOS" >> $GITHUB_ENV
 
-      - name: Build package
+      - name: Build packages
         run: |
           cd wcvoiceclone
+          mkdir -p out
+          echo "== 有根版 rootful =="
           make package FINALPACKAGE=1
-          ls -la packages/
+          mv packages/*.deb out/rootful.deb
+          make clean >/dev/null
+          echo "== 无根版 rootless (Dopamine) =="
+          make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+          mv packages/*.deb out/rootless.deb
+          ls -la out/
 
       - name: Upload deb
         uses: actions/upload-artifact@v4
         with:
           name: WCVoiceClone-deb
-          path: wcvoiceclone/packages/*.deb
+          path: wcvoiceclone/out/*.deb
