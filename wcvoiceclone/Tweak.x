@@ -3,6 +3,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #include <string.h>
+#include <stdlib.h>
 #import "src/PrefsManager.h"
 #import "src/FAVoiceAPI.h"
 #import "src/SilkBridge.h"
@@ -179,6 +180,29 @@ static NSString *WCVOwnWxId(void) {
 typedef void (^WCVDoneBlock)(BOOL ok, NSString *log);
 
 // 发送语音消息：优先已知方法名，失败则运行时扫描所有消息服务类自动适配
+// 微信语音音频规范路径：Documents/MicroMsg/账号ID/voice/msg_时间戳.silk
+// 关键：mobile:mobile + chmod 644（文档要求，否则微信读不到）
+static NSString *WCVAudioExportPath(id msg, NSString *toUser, unsigned int durSec, NSData *silk) {
+    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    NSString *docPath = paths.count > 0 ? paths[0] : NSTemporaryDirectory();
+    NSString *wxidDir = (toUser.length > 0) ? toUser : @"misc";
+    NSString *voiceDir = [[docPath stringByAppendingPathComponent:@"MicroMsg"]
+                             stringByAppendingPathComponent:wxidDir];
+    voiceDir = [voiceDir stringByAppendingPathComponent:@"voice"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:voiceDir
+                              withIntermediateDirectories:YES attributes:nil error:nil];
+    unsigned int ts = (unsigned int)[NSDate date].timeIntervalSince1970;
+    NSString *full = [voiceDir stringByAppendingPathComponent:
+                      [NSString stringWithFormat:@"msg_%u.silk", ts]];
+    [silk writeToFile:full atomically:YES];
+    // 权限修复（最重要）
+    @try {
+        system([[NSString stringWithFormat:@"chown mobile:mobile %@", full] UTF8String]);
+        system([[NSString stringWithFormat:@"chmod 644 %@", full] UTF8String]);
+    } @catch (NSException *e) {}
+    return full;
+}
+
 static BOOL WCVTrySendVoice(NSData *silk, NSString *toUser, unsigned int durationMs, NSMutableString *log) {
     Class msgWrapClass = NSClassFromString(@"CMessageWrap");
     Class mgrClass     = NSClassFromString(@"CMessageMgr");
@@ -214,23 +238,33 @@ static BOOL WCVTrySendVoice(NSData *silk, NSString *toUser, unsigned int duratio
     WCVSafeSet(msg, @[@"m_uiMessageType", @"m_iMessageType"], @34);
     WCVSafeSet(msg, @[@"m_nsFromUsr"], fromUser);
     WCVSafeSet(msg, @[@"m_nsToUsr", @"m_nsTalker", @"m_nsChatUsr"], toUser);
+    // 参照权威文档：voicelength 单位是【秒】，playback 读它
+    unsigned int durSec = MAX(1, MIN(60, (unsigned int)(durationMs / 1000)));
     NSString *contentXml = [NSString stringWithFormat:
-        @"<msg><voicemsg voicelength=\"%u\" voiceformat=\"4\" forwardflag=\"0\" /></msg>", durationMs];
+        @"<msg><voicemsg voicelength=\"%u\" voiceformat=\"4\" forwardflag=\"0\" /></msg>", durSec];
     WCVSafeSet(msg, @[@"m_nsContent"], contentXml);
     WCVSafeSet(msg, @[@"m_uiStatus"], @1);                 // 模板值
     WCVSafeSet(msg, @[@"m_uiDownloadStatus"], @1);         // 模板值
     WCVSafeSet(msg, @[@"m_uiVoiceFormat", @"m_voiceFormat", @"m_cVoiceFormat"], @4);
     WCVSafeSet(msg, @[@"m_uiVoiceEndFlag"], @1);
-    WCVSafeSet(msg, @[@"m_uiVoiceTime"], @(durationMs));   // 上传管理器可能读取
     WCVOwnSendUntilTs = [NSDate date].timeIntervalSince1970 + 6;
     WCVSafeSet(msg, @[@"m_dtVoice", @"nativeVoiceData"], silk);
     WCVSafeSet(msg, @[@"m_uiCreateTime"], @((unsigned int)[NSDate date].timeIntervalSince1970));
 
     // 2.5 附加语音扩展信息对象（原生消息自带）
     Class extCls = NSClassFromString(@"CExtendInfoOfVoiceMsg");
-    if (extCls) {
+    if (extCls && silk) {
         id ext = [[extCls alloc] init];
-        if (ext) WCVSafeSet(msg, @[@"m_extendInfoWithMsgType"], ext);
+        if (ext) {
+            NSString *path = WCVAudioExportPath(msg, toUser, durSec, silk);
+            if (path) {
+                WCVSafeSet(ext, @[@"m_voicePath"], path);
+                WCVSafeSet(ext, @[@"m_voiceTime"], @(durSec));       // 秒，与 xml 一致
+                WCVSafeSet(ext, @[@"m_downloadStatus"], @(1));       // 已下载
+                WCVSafeSet(msg, @[@"m_extendInfoWithMsgType"], ext);
+                [log appendFormat:@"✓ extendInfo.voicePath=%@ 时长=%us\n", path, durSec];
+            }
+        }
     }
 
     // 3. 入库（WCVoice 验证流程第一步）：本地出现气泡并分配 LocalID
@@ -273,24 +307,7 @@ static BOOL WCVTrySendVoice(NSData *silk, NSString *toUser, unsigned int duratio
     }
     [log appendFormat:@"✓ LocalID=%u 时长=%ums\n", localID, durationMs];
 
-    // 5. 写 silk 到微信期望的音频路径
-    SEL gp = NSSelectorFromString(@"getPathOfMsgImg:");
-    if ([msgWrapClass respondsToSelector:gp]) {
-        @try {
-            NSString *p = [msgWrapClass performSelector:gp withObject:msg];
-            if ([p isKindOfClass:NSString.class]) {
-                p = [(NSString *)p stringByReplacingOccurrencesOfString:@"Img" withString:@"Audio"];
-                p = [(NSString *)p stringByReplacingOccurrencesOfString:@".pic" withString:@".aud"];
-                [[NSFileManager defaultManager]
-                    createDirectoryAtPath:[p stringByDeletingLastPathComponent]
-                          withIntermediateDirectories:YES attributes:nil error:nil];
-                [silk writeToFile:p atomically:YES];
-                [log appendFormat:@"✓ 音频文件已写入 (%.1f KB)\n", silk.length / 1024.0];
-            }
-        } @catch (NSException *e) {
-            [log appendFormat:@"- 写文件跳过: %@\n", e.reason];
-        }
-    }
+    // 5.（音频文件已由 WCVAudioExportPath 按规范路径写入，并挂到 extendInfo.voicePath）
 
     // 6. 触发上传发送（WCVoice 同款通道）
     Class senderClass = NSClassFromString(@"AudioSender");
