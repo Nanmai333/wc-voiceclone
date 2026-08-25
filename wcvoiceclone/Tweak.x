@@ -208,18 +208,30 @@ static BOOL WCVTrySendVoice(NSData *silk, NSString *toUser, unsigned int duratio
     }
     if (!msg) msg = [[msgWrapClass alloc] init];
 
-    // 2. 关键字段
+    // 2. 关键字段 —— 严格对照真机捕获的原生模板
+    //    模板: status=1 downloadStatus=1 msgSource="" 
+    //    content 是 XML: <msg><voicemsg voicelength="ms" voiceformat="4" forwardflag="0"/></msg>
     WCVSafeSet(msg, @[@"m_uiMessageType", @"m_iMessageType"], @34);
     WCVSafeSet(msg, @[@"m_nsFromUsr"], fromUser);
     WCVSafeSet(msg, @[@"m_nsToUsr", @"m_nsTalker", @"m_nsChatUsr"], toUser);
-    WCVSafeSet(msg, @[@"m_nsContent"], @"[语音]");
+    NSString *contentXml = [NSString stringWithFormat:
+        @"<msg><voicemsg voicelength=\"%u\" voiceformat=\"4\" forwardflag=\"0\" /></msg>", durationMs];
+    WCVSafeSet(msg, @[@"m_nsContent"], contentXml);
+    WCVSafeSet(msg, @[@"m_uiStatus"], @1);                 // 模板值
+    WCVSafeSet(msg, @[@"m_uiDownloadStatus"], @1);         // 模板值
     WCVSafeSet(msg, @[@"m_uiVoiceFormat", @"m_voiceFormat", @"m_cVoiceFormat"], @4);
     WCVSafeSet(msg, @[@"m_uiVoiceEndFlag"], @1);
-    WCVSafeSet(msg, @[@"m_uiVoiceTime", @"m_nVoiceTime"], @(durationMs));
-    WCVSafeSet(msg, @[@"m_nTotalLen"], @(durationMs / 1000));
-    WCVOwnSendUntilTs = [NSDate date].timeIntervalSince1970 + 6;   // 静默窗口：避免捕获探针抓到自己
+    WCVSafeSet(msg, @[@"m_uiVoiceTime"], @(durationMs));   // 上传管理器可能读取
+    WCVOwnSendUntilTs = [NSDate date].timeIntervalSince1970 + 6;
     WCVSafeSet(msg, @[@"m_dtVoice", @"nativeVoiceData"], silk);
     WCVSafeSet(msg, @[@"m_uiCreateTime"], @((unsigned int)[NSDate date].timeIntervalSince1970));
+
+    // 2.5 附加语音扩展信息对象（原生消息自带）
+    Class extCls = NSClassFromString(@"CExtendInfoOfVoiceMsg");
+    if (extCls) {
+        id ext = [[extCls alloc] init];
+        if (ext) WCVSafeSet(msg, @[@"m_extendInfoWithMsgType"], ext);
+    }
 
     // 3. 入库（WCVoice 验证流程第一步）：本地出现气泡并分配 LocalID
     BOOL inserted = NO;
