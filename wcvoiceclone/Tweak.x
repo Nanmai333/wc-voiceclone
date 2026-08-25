@@ -22,6 +22,8 @@
 - (void)wcv_debugProbe;
 @end
 
+static BOOL WCVCaptureArmedOnce = YES;   // 启动后首次遇到真实录音时捕获字段
+static double WCVOwnSendUntilTs = 0;      // 我们自己发送后的静默截止时间戳
 static void WCVAddBallIfNeeded(UIViewController *vc);
 static void WCVShowBanner(UIWindow *window);
 static NSString *WCVOwnWxId(void);
@@ -177,7 +179,7 @@ static NSString *WCVOwnWxId(void) {
 typedef void (^WCVDoneBlock)(BOOL ok, NSString *log);
 
 // 发送语音消息：优先已知方法名，失败则运行时扫描所有消息服务类自动适配
-static BOOL WCVTrySendVoice(NSData *silk, NSString *toUser, unsigned int durationSec, NSMutableString *log) {
+static BOOL WCVTrySendVoice(NSData *silk, NSString *toUser, unsigned int durationMs, NSMutableString *log) {
     Class msgWrapClass = NSClassFromString(@"CMessageWrap");
     Class mgrClass     = NSClassFromString(@"CMessageMgr");
     if (!msgWrapClass || !mgrClass) {
@@ -256,7 +258,7 @@ static BOOL WCVTrySendVoice(NSData *silk, NSString *toUser, unsigned int duratio
         if ([v isKindOfClass:NSString.class]) localID = (unsigned int)[(NSString *)v intValue];
         else if ([v isKindOfClass:NSNumber.class]) localID = [(NSNumber *)v unsignedIntValue];
     }
-    [log appendFormat:@"✓ LocalID=%u\n", localID];
+    [log appendFormat:@"✓ LocalID=%u 时长=%ums\n", localID, durationMs];
 
     // 5. 写 silk 到微信期望的音频路径
     SEL gp = NSSelectorFromString(@"getPathOfMsgImg:");
@@ -535,17 +537,17 @@ static void WCVAddBallIfNeeded(UIViewController *vc) {
                     return;
                 }
                 hud.message = @"3/3 发送中…";
-                // 时长 ≈ 字节数 ÷ 码率(25kbps÷8)，限 1~60 秒
-                unsigned int dur = (unsigned int)MAX(1, MIN(60, (double)(silk.length - 9) / (25000.0 / 8)));
+                // 精确时长：PCM 字节数 ÷ 2 = 采样数；24000Hz
+                unsigned int durMs = (unsigned int)MAX(500, MIN(59000, (double)(data.length / 2) / 24.0));
                 NSString *to = WCVCurrentChatUser(self);
                 NSMutableString *log = [NSMutableString string];
                 BOOL ok = to.length > 0;
                 if (!ok) {
-                    [log appendString:@"❌ 拿不到当前聊天对象 (m_nsChatUsr)"];
+                    [log appendString:@"❌ 拿不到当前聊天对象"];
                 } else {
-                    ok = WCVTrySendVoice(silk, to, dur, log);
+                    ok = WCVTrySendVoice(silk, to, durMs, log);
                 }
-                NSString *msg = ok ? [NSString stringWithFormat:@"✅ 已发送 %.1f 秒克隆语音\n\n%@", (double)dur, log]
+                NSString *msg = ok ? [NSString stringWithFormat:@"✅ 已发送 %.1f 秒克隆语音\n\n%@", durMs / 1000.0, log]
                                    : log;
                 [self wcv_replaceHud:hud message:msg];
             });
@@ -650,6 +652,55 @@ static void WCVAddBallIfNeeded(UIViewController *vc) {
 
 
 
+%end
+
+// 真实语音字段捕获：用户手动录一条语音时，把微信原生构造的字段值全部导出到剪贴板
+%hook CMessageMgr
+- (void)AddLocalMsg:(id)arg1 MsgWrap:(id)arg2 {
+    %orig;
+    @try {
+        if (!WCVCaptureArmedOnce) return;
+        if ([NSDate date].timeIntervalSince1970 < WCVOwnSendUntilTs) return;  // 跳过我们自己发的
+        NSNumber *type = nil;
+        @try { type = [arg2 valueForKey:@"m_uiMessageType"]; } @catch (NSException *e) {}
+        if (![type isEqual:@34]) return;
+
+        WCVCaptureArmedOnce = NO;   // 只捕一次
+        NSMutableString *r = [NSMutableString stringWithString:@"【真实语音消息字段模板】\n"];
+        NSArray<NSString *> *keys = @[
+            @"m_uiMesLocalID", @"m_uiVoiceTime", @"m_nTotalLen", @"m_nVoiceTime",
+            @"m_uiVoiceFormat", @"m_cVoiceFormat", @"m_uiStatus", @"m_uiDownloadStatus",
+            @"m_uiCreateTime", @"m_nsMsgSource", @"m_nsFromUsr", @"m_nsToUsr",
+            @"m_nsContent", @"m_bIsSender",
+        ];
+        for (NSString *k in keys) {
+            id v = nil;
+            @try { v = [arg2 valueForKey:k]; } @catch (NSException *e2) { continue; }
+            if (v == nil) { [r appendFormat:@"%@ = (nil)\n", k]; continue; }
+            if ([v isKindOfClass:NSData.class]) {
+                NSData *d = (NSData *)v;
+                NSMutableString *hex = [NSMutableString string];
+                const unsigned char *bytes = (const unsigned char *)d.bytes;
+                for (NSUInteger i = 0; i < 12 && i < d.length; i++)
+                    [hex appendFormat:@"%02x ", bytes[i]];
+                [r appendFormat:@"%@ = NSData(%lu字节) 头: %@\n", k, (unsigned long)d.length, hex];
+            } else {
+                NSString *s = [NSString stringWithFormat:@"%@", v];
+                if (s.length > 200) s = [[s substringToIndex:200] stringByAppendingString:@"…"];
+                [r appendFormat:@"%@ = (%@) %@\n", k, NSStringFromClass([v class]), s];
+            }
+        }
+        id ext = nil;
+        @try { ext = [arg2 valueForKey:@"m_extendInfoWithMsgType"]; } @catch (NSException *e3) {}
+        [r appendFormat:@"extendInfo = %@\n", ext ?: @"(nil)"];
+
+        UIPasteboard.generalPasteboard.string = r;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIWindow *w = [UIApplication sharedApplication].keyWindow;
+            if (w) WCVShowBannerText(w, @"已捕获真实语音字段 → 剪贴板");
+        });
+    } @catch (NSException *e) {}
+}
 %end
 
 %ctor {
