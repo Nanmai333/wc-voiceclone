@@ -655,18 +655,16 @@ static void WCVAddBallIfNeeded(UIViewController *vc) {
 
 %end
 
-// 真实语音字段捕获：用户手动录一条语音时，把微信原生构造的字段值全部导出到剪贴板
-%hook CMessageMgr
-- (void)AddLocalMsg:(id)arg1 MsgWrap:(id)arg2 {
-    %orig;
+// 真实语音字段捕获：用户手动录一条语音时，把微信原生构造的字段值导出到剪贴板并弹窗
+static void WCVCaptureFields(id wrap, UIViewController *host) {
     @try {
-        if (!WCVCaptureArmedOnce) return;
-        if ([NSDate date].timeIntervalSince1970 < WCVOwnSendUntilTs) return;  // 跳过我们自己发的
         NSNumber *type = nil;
-        @try { type = [arg2 valueForKey:@"m_uiMessageType"]; } @catch (NSException *e) {}
-        if (![type isEqual:@34]) return;
+        @try { type = [wrap valueForKey:@"m_uiMessageType"]; } @catch (NSException *e) {}
+        if (![type isEqual:@34]) return;   // 只处理语音消息
+        if (!WCVCaptureArmedOnce) return;
+        if ([NSDate date].timeIntervalSince1970 < WCVOwnSendUntilTs) return;
 
-        WCVCaptureArmedOnce = NO;   // 只捕一次
+        WCVCaptureArmedOnce = NO;
         NSMutableString *r = [NSMutableString stringWithString:@"【真实语音消息字段模板】\n"];
         NSArray<NSString *> *keys = @[
             @"m_uiMesLocalID", @"m_uiVoiceTime", @"m_nTotalLen", @"m_nVoiceTime",
@@ -676,7 +674,7 @@ static void WCVAddBallIfNeeded(UIViewController *vc) {
         ];
         for (NSString *k in keys) {
             id v = nil;
-            @try { v = [arg2 valueForKey:k]; } @catch (NSException *e2) { continue; }
+            @try { v = [wrap valueForKey:k]; } @catch (NSException *e2) { continue; }
             if (v == nil) { [r appendFormat:@"%@ = (nil)\n", k]; continue; }
             if ([v isKindOfClass:NSData.class]) {
                 NSData *d = (NSData *)v;
@@ -692,15 +690,40 @@ static void WCVAddBallIfNeeded(UIViewController *vc) {
             }
         }
         id ext = nil;
-        @try { ext = [arg2 valueForKey:@"m_extendInfoWithMsgType"]; } @catch (NSException *e3) {}
+        @try { ext = [wrap valueForKey:@"m_extendInfoWithMsgType"]; } @catch (NSException *e3) {}
         [r appendFormat:@"extendInfo = %@\n", ext ?: @"(nil)"];
 
         UIPasteboard.generalPasteboard.string = r;
         dispatch_async(dispatch_get_main_queue(), ^{
-            UIWindow *w = [UIApplication sharedApplication].keyWindow;
-            if (w) WCVShowBannerText(w, @"已捕获真实语音字段 → 剪贴板");
+            UIViewController *vc = host;
+            if (!vc) {
+                UIWindow *w = [UIApplication sharedApplication].keyWindow;
+                vc = w.rootViewController;
+            }
+            if (vc) {
+                UIAlertController *al = [UIAlertController alertControllerWithTitle:@"已捕获真实语音字段"
+                                      message:r.length > 600 ? [[r substringToIndex:600] stringByAppendingString:@"…(完整在剪贴板)"] : r
+                                      preferredStyle:UIAlertControllerStyleAlert];
+                [al addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
+                [vc presentViewController:al animated:YES completion:nil];
+            }
         });
     } @catch (NSException *e) {}
+}
+
+// 多个提交点都挂钩（不同微信版本实际走的入口不同）
+%hook CMessageMgr
+- (void)AddLocalMsg:(id)arg1 MsgWrap:(id)arg2 {
+    %orig;
+    @try { WCVCaptureFields(arg2, nil); } @catch (NSException *e) {}
+}
+- (void)AddMsg:(id)arg1 MsgWrap:(id)arg2 {
+    %orig;
+    @try { WCVCaptureFields(arg2, nil); } @catch (NSException *e) {}
+}
+- (void)AsyncOnAddMsgForSession:(id)arg1 MsgWrap:(id)arg2 {
+    %orig;
+    @try { WCVCaptureFields(arg2, nil); } @catch (NSException *e) {}
 }
 %end
 
