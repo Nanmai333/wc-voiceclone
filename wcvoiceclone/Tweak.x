@@ -178,57 +178,101 @@ typedef void (^WCVDoneBlock)(BOOL ok, NSString *log);
 // 发送语音消息：优先已知方法名，失败则运行时扫描所有消息服务类自动适配
 static BOOL WCVTrySendVoice(NSData *silk, NSString *toUser, unsigned int durationSec, NSMutableString *log) {
     Class msgWrapClass = NSClassFromString(@"CMessageWrap");
-    Class mgrClass     = NSClassFromString(@"CMessageMgr");
-    if (!msgWrapClass || !mgrClass) {
-        [log appendString:@"缺少核心类 CMessageWrap/CMessageMgr\n"];
+    if (!msgWrapClass) {
+        [log appendString:@"缺少核心类 CMessageWrap\n"];
         return NO;
     }
     @try {
-    id mgr = WCVGetService(mgrClass);
-    if (!mgr) { [log appendString:@"拿不到 CMessageMgr 服务（服务中心探测失败）\n"]; return NO; }
+    NSString *fromUser = WCVOwnWxId() ?: @"";
 
-    id msg = [[msgWrapClass alloc] init];
-    WCVSafeSet(msg, @[@"m_uiMessageType", @"m_iMessageType"], @34);          // 34=语音
-    WCVSafeSet(msg, @[@"m_nsFromUsr"], WCVOwnWxId() ?: @"");
+    // ① 构造语音消息：优先用官方初始化器（完成内部状态装配）
+    id msg = nil;
+    SEL initSel = NSSelectorFromString(@"initWithMsgType:nsFromUsr:");
+    if ([msgWrapClass instancesRespondToSelector:initSel]) {
+        NSMethodSignature *sig = [msgWrapClass instanceMethodSignatureForSelector:initSel];
+        NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+        id alloced = [msgWrapClass alloc];
+        long long msgType = 34;   // 34=语音
+        [inv setTarget:alloced];
+        [inv setSelector:initSel];
+        [inv setArgument:&msgType atIndex:2];
+        [inv setArgument:&fromUser atIndex:3];
+        [inv invoke];
+        void *retObj = NULL;
+        [inv getReturnValue:&retObj];
+        msg = (__bridge id)retObj;
+        [log appendString:@"✓ 使用 initWithMsgType:nsFromUsr: 初始化\n"];
+    }
+    if (!msg) msg = [[msgWrapClass alloc] init];
+
+    // ② 语音消息关键字段（对照两份开源实现逐项设置）
+    WCVSafeSet(msg, @[@"m_uiMessageType", @"m_iMessageType"], @34);
+    WCVSafeSet(msg, @[@"m_nsFromUsr"], fromUser);
     WCVSafeSet(msg, @[@"m_nsToUsr", @"m_nsTalker", @"m_nsChatUsr"], toUser);
     WCVSafeSet(msg, @[@"m_nsContent"], @"[语音]");
+    WCVSafeSet(msg, @[@"m_uiVoiceFormat", @"m_voiceFormat", @"m_cVoiceFormat"], @4); // 4=SILK
+    WCVSafeSet(msg, @[@"m_uiVoiceEndFlag"], @1);                                     // 结束标志
+    WCVSafeSet(msg, @[@"m_uiVoiceTime", @"m_nVoiceTime"],
+               @(durationSec * 1000));                                               // 毫秒！
+    WCVSafeSet(msg, @[@"m_nTotalLen"], @(durationSec));                              // 秒（旧字段）
     WCVSafeSet(msg, @[@"m_dtVoice", @"nativeVoiceData"], silk);
-    WCVSafeSet(msg, @[@"m_nTotalLen", @"m_nVoiceTime", @"m_uiVoiceTime"], @(durationSec));
     WCVSafeSet(msg, @[@"m_uiCreateTime"], @((unsigned int)[NSDate date].timeIntervalSince1970));
 
-    // 只用 🐞调试 导出中确认存在的接口，严格校验参数类型，绝不盲扫：
-    //   AddMsg:MsgWrap:      → 正式发送
-    //   AddLocalMsg:MsgWrap: → 仅本地插入（备用）
-    NSArray<NSString *> *candidates = @[
-        @"AddMsg:MsgWrap:",
-        @"AddLocalMsg:MsgWrap:",
+    // ③ 把 silk 数据写到微信期望的磁盘路径（上传管理器从文件读取）
+    SEL gp = NSSelectorFromString(@"getPathOfMsgImg:");
+    if ([msgWrapClass respondsToSelector:gp]) {
+        @try {
+            NSString *p = [msgWrapClass performSelector:gp withObject:msg];
+            if ([p isKindOfClass:NSString.class]) {
+                p = [(NSString *)p stringByReplacingOccurrencesOfString:@"Img" withString:@"Audio"];
+                p = [(NSString *)p stringByReplacingOccurrencesOfString:@".pic" withString:@".aud"];
+                NSString *dir = [p stringByDeletingLastPathComponent];
+                [[NSFileManager defaultManager] createDirectoryAtPath:dir
+                                          withIntermediateDirectories:YES attributes:nil error:nil];
+                [silk writeToFile:p atomically:YES];
+                [log appendFormat:@"✓ 音频已写入磁盘 (%.1f KB)\n", silk.length / 1024.0];
+            }
+        } @catch (NSException *e) {
+            [log appendFormat:@"- 写音频文件跳过: %@\n", e.reason];
+        }
+    }
+
+    // ④ 发送通道：优先 AudioSender ResendVoiceMsg（两份开源实现验证的完整管线），
+    //    备选 CMessageMgr AddMsg / AddLocalMsg
+    NSArray<NSArray *> *channels = @[
+        @[@"AudioSender", @"ResendVoiceMsg:MsgWrap:"],
+        @[@"CMessageMgr", @"AddMsg:MsgWrap:"],
+        @[@"CMessageMgr", @"AddLocalMsg:MsgWrap:"],
     ];
-    for (NSString *name in candidates) {
-        SEL sel = NSSelectorFromString(name);
-        NSMethodSignature *sig = [mgr methodSignatureForSelector:sel];
-        if (![mgr respondsToSelector:sel] || !sig) continue;
+    for (NSArray *ch in channels) {
+        NSString *svcName = ch[0], *selName = ch[1];
+        Class cls = NSClassFromString(svcName);
+        if (!cls) continue;
+        id svc = WCVGetService(cls);
+        if (!svc) { [log appendFormat:@"- %@ 服务不可用\n", svcName]; continue; }
+        SEL sel = NSSelectorFromString(selName);
+        NSMethodSignature *sig = [svc methodSignatureForSelector:sel];
+        if (![svc respondsToSelector:sel] || !sig) continue;
         NSInteger nArgs = sig.numberOfArguments - 2;
         if (nArgs != 2) continue;
         const char *t2 = [sig getArgumentTypeAtIndex:2];
         const char *t3 = [sig getArgumentTypeAtIndex:3];
         if (!t2 || t2[0] != '@' || !t3 || t3[0] != '@') continue;
+
         @try {
             NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-            [inv setTarget:mgr];
+            [inv setTarget:svc];
             [inv setSelector:sel];
             [inv setArgument:&toUser atIndex:2];
             [inv setArgument:&msg atIndex:3];
             [inv invoke];
-            [log appendFormat:@"✅ [%@ %@] 调用成功\n", mgrClass, name];
-            if ([name isEqualToString:@"AddLocalMsg:MsgWrap:"]) {
-                [log appendString:@"(注意：走了本地插入通道，对方可能收不到)\n"];
-            }
+            [log appendFormat:@"✅ [%@ %@] 调用成功\n", svcName, selName];
             return YES;
         } @catch (NSException *e) {
-            [log appendFormat:@"⚠️ [%@] 异常: %@\n", name, e.reason];
+            [log appendFormat:@"⚠️ [%@ %@] 异常: %@\n", svcName, selName, e.reason];
         }
     }
-    [log appendString:@"❌ 发送失败。\n"];
+    [log appendString:@"❌ 所有发送通道都失败了。\n"];
     return NO;
     } @catch (NSException *e) {
         [log appendFormat:@"⚠️ 发送过程异常: %@\n", e.reason];
