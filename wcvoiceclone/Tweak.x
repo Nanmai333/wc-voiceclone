@@ -15,8 +15,6 @@
 // 以下是 %new 运行时添加的方法，需提前声明才能编译
 - (void)wcv_ballTapped;
 - (void)wcv_promptTTS;
-- (void)wcv_promptReplace;
-- (void)wcv_synthAndArm:(NSString *)text;
 - (void)wcv_synthAndSend:(NSString *)text;
 - (void)wcv_replaceHud:(UIViewController *)hud message:(NSString *)message;
 - (void)wcv_testAPI;
@@ -29,9 +27,6 @@ static void WCVShowBanner(UIWindow *window);
 static NSString *WCVOwnWxId(void);
 static BOOL WCVLooksLikeWxId(id v);
 
-// —— 替换模式的待发数据 ——
-static NSData *WCVPendingSilk = nil;      // 合成好的 silk 数据
-static unsigned int WCVPendingMs = 0;     // 时长(毫秒)
 
 #pragma mark - 工具函数
 
@@ -184,21 +179,22 @@ typedef void (^WCVDoneBlock)(BOOL ok, NSString *log);
 // 发送语音消息：优先已知方法名，失败则运行时扫描所有消息服务类自动适配
 static BOOL WCVTrySendVoice(NSData *silk, NSString *toUser, unsigned int durationSec, NSMutableString *log) {
     Class msgWrapClass = NSClassFromString(@"CMessageWrap");
-    if (!msgWrapClass) {
-        [log appendString:@"缺少核心类 CMessageWrap\n"];
+    Class mgrClass     = NSClassFromString(@"CMessageMgr");
+    if (!msgWrapClass || !mgrClass) {
+        [log appendString:@"缺少核心类 CMessageWrap/CMessageMgr\n"];
         return NO;
     }
     @try {
     NSString *fromUser = WCVOwnWxId() ?: @"";
 
-    // ① 构造语音消息：优先用官方初始化器（完成内部状态装配）
+    // 1. 官方初始化器构造语音消息
     id msg = nil;
     SEL initSel = NSSelectorFromString(@"initWithMsgType:nsFromUsr:");
     if ([msgWrapClass instancesRespondToSelector:initSel]) {
         NSMethodSignature *sig = [msgWrapClass instanceMethodSignatureForSelector:initSel];
         NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
         id alloced = [msgWrapClass alloc];
-        long long msgType = 34;   // 34=语音
+        long long msgType = 34;
         [inv setTarget:alloced];
         [inv setSelector:initSel];
         [inv setArgument:&msgType atIndex:2];
@@ -207,24 +203,62 @@ static BOOL WCVTrySendVoice(NSData *silk, NSString *toUser, unsigned int duratio
         void *retObj = NULL;
         [inv getReturnValue:&retObj];
         msg = (__bridge id)retObj;
-        [log appendString:@"✓ 使用 initWithMsgType:nsFromUsr: 初始化\n"];
     }
     if (!msg) msg = [[msgWrapClass alloc] init];
 
-    // ② 语音消息关键字段（对照两份开源实现逐项设置）
+    // 2. 关键字段
     WCVSafeSet(msg, @[@"m_uiMessageType", @"m_iMessageType"], @34);
     WCVSafeSet(msg, @[@"m_nsFromUsr"], fromUser);
     WCVSafeSet(msg, @[@"m_nsToUsr", @"m_nsTalker", @"m_nsChatUsr"], toUser);
     WCVSafeSet(msg, @[@"m_nsContent"], @"[语音]");
-    WCVSafeSet(msg, @[@"m_uiVoiceFormat", @"m_voiceFormat", @"m_cVoiceFormat"], @4); // 4=SILK
-    WCVSafeSet(msg, @[@"m_uiVoiceEndFlag"], @1);                                     // 结束标志
-    WCVSafeSet(msg, @[@"m_uiVoiceTime", @"m_nVoiceTime"],
-               @(durationSec * 1000));                                               // 毫秒！
-    WCVSafeSet(msg, @[@"m_nTotalLen"], @(durationSec));                              // 秒（旧字段）
+    WCVSafeSet(msg, @[@"m_uiVoiceFormat", @"m_voiceFormat", @"m_cVoiceFormat"], @4);
+    WCVSafeSet(msg, @[@"m_uiVoiceEndFlag"], @1);
+    WCVSafeSet(msg, @[@"m_uiVoiceTime", @"m_nVoiceTime"], @(durationSec * 1000));
+    WCVSafeSet(msg, @[@"m_nTotalLen"], @(durationSec));
     WCVSafeSet(msg, @[@"m_dtVoice", @"nativeVoiceData"], silk);
     WCVSafeSet(msg, @[@"m_uiCreateTime"], @((unsigned int)[NSDate date].timeIntervalSince1970));
 
-    // ③ 把 silk 数据写到微信期望的磁盘路径（上传管理器从文件读取）
+    // 3. 入库（WCVoice 验证流程第一步）：本地出现气泡并分配 LocalID
+    BOOL inserted = NO;
+    id mgr = WCVGetService(mgrClass);
+    if (mgr) {
+        SEL addLocal = NSSelectorFromString(@"AddLocalMsg:MsgWrap:");
+        NSMethodSignature *sig = [mgr methodSignatureForSelector:addLocal];
+        if ([mgr respondsToSelector:addLocal] && sig && sig.numberOfArguments - 2 == 2) {
+            const char *t2 = [sig getArgumentTypeAtIndex:2];
+            const char *t3 = [sig getArgumentTypeAtIndex:3];
+            if (t2 && t2[0] == '@' && t3 && t3[0] == '@') {
+                @try {
+                    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                    [inv setTarget:mgr];
+                    [inv setSelector:addLocal];
+                    [inv setArgument:&toUser atIndex:2];
+                    [inv setArgument:&msg atIndex:3];
+                    [inv invoke];
+                    inserted = YES;
+                    [log appendString:@"✅ AddLocalMsg 已入库\n"];
+                } @catch (NSException *e) {
+                    [log appendFormat:@"⚠️ AddLocalMsg 异常: %@\n", e.reason];
+                }
+            }
+        } else {
+            [log appendString:@"⚠️ AddLocalMsg:MsgWrap: 不可用\n"];
+        }
+    } else {
+        [log appendString:@"⚠️ 拿不到 CMessageMgr\n"];
+    }
+
+    // 4. 读取入库分配的 LocalID
+    unsigned int localID = 0;
+    {
+        id v = nil;
+        @try { v = [msg valueForKey:@"m_uiMesLocalID"]; } @catch (NSException *e) {}
+        if ([v isKindOfClass:NSString.class]) localID = (unsigned int)[(NSString *)v intValue];
+        else if ([v isKindOfClass:NSNumber.class]) localID = [(NSNumber *)v unsignedIntValue];
+    }
+    [log appendFormat:@"✓ LocalID=%u\n", localID];
+
+    // 5. 写 silk 到微信期望的音频路径
     SEL gp = NSSelectorFromString(@"getPathOfMsgImg:");
     if ([msgWrapClass respondsToSelector:gp]) {
         @try {
@@ -232,53 +266,76 @@ static BOOL WCVTrySendVoice(NSData *silk, NSString *toUser, unsigned int duratio
             if ([p isKindOfClass:NSString.class]) {
                 p = [(NSString *)p stringByReplacingOccurrencesOfString:@"Img" withString:@"Audio"];
                 p = [(NSString *)p stringByReplacingOccurrencesOfString:@".pic" withString:@".aud"];
-                NSString *dir = [p stringByDeletingLastPathComponent];
-                [[NSFileManager defaultManager] createDirectoryAtPath:dir
-                                          withIntermediateDirectories:YES attributes:nil error:nil];
+                [[NSFileManager defaultManager]
+                    createDirectoryAtPath:[p stringByDeletingLastPathComponent]
+                          withIntermediateDirectories:YES attributes:nil error:nil];
                 [silk writeToFile:p atomically:YES];
-                [log appendFormat:@"✓ 音频已写入磁盘 (%.1f KB)\n", silk.length / 1024.0];
+                [log appendFormat:@"✓ 音频文件已写入 (%.1f KB)\n", silk.length / 1024.0];
             }
         } @catch (NSException *e) {
-            [log appendFormat:@"- 写音频文件跳过: %@\n", e.reason];
+            [log appendFormat:@"- 写文件跳过: %@\n", e.reason];
         }
     }
 
-    // ④ 发送通道：优先 AudioSender ResendVoiceMsg（两份开源实现验证的完整管线），
-    //    备选 CMessageMgr AddMsg / AddLocalMsg
-    NSArray<NSArray *> *channels = @[
-        @[@"AudioSender", @"ResendVoiceMsg:MsgWrap:"],
-        @[@"CMessageMgr", @"AddMsg:MsgWrap:"],
-        @[@"CMessageMgr", @"AddLocalMsg:MsgWrap:"],
-    ];
-    for (NSArray *ch in channels) {
-        NSString *svcName = ch[0], *selName = ch[1];
-        Class cls = NSClassFromString(svcName);
-        if (!cls) continue;
-        id svc = WCVGetService(cls);
-        if (!svc) { [log appendFormat:@"- %@ 服务不可用\n", svcName]; continue; }
-        SEL sel = NSSelectorFromString(selName);
-        NSMethodSignature *sig = [svc methodSignatureForSelector:sel];
-        if (![svc respondsToSelector:sel] || !sig) continue;
-        NSInteger nArgs = sig.numberOfArguments - 2;
-        if (nArgs != 2) continue;
-        const char *t2 = [sig getArgumentTypeAtIndex:2];
-        const char *t3 = [sig getArgumentTypeAtIndex:3];
-        if (!t2 || t2[0] != '@' || !t3 || t3[0] != '@') continue;
+    // 6. 触发上传发送（WCVoice 同款通道）
+    Class senderClass = NSClassFromString(@"AudioSender");
+    id sender = senderClass ? WCVGetService(senderClass) : nil;
+    if (sender) {
+        SEL resend = NSSelectorFromString(@"ResendVoiceMsg:MsgWrap:");
+        NSMethodSignature *sig = [sender methodSignatureForSelector:resend];
+        if ([sender respondsToSelector:resend] && sig && sig.numberOfArguments - 2 == 2) {
+            const char *t2 = [sig getArgumentTypeAtIndex:2];
+            const char *t3 = [sig getArgumentTypeAtIndex:3];
+            if (t2 && t2[0] == '@' && t3 && t3[0] == '@') {
+                @try {
+                    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                    [inv setTarget:sender];
+                    [inv setSelector:resend];
+                    [inv setArgument:&toUser atIndex:2];
+                    [inv setArgument:&msg atIndex:3];
+                    [inv invoke];
+                    [log appendString:@"✅ AudioSender ResendVoiceMsg 已触发上传\n"];
+                    return YES;
+                } @catch (NSException *e) {
+                    [log appendFormat:@"⚠️ ResendVoiceMsg 异常: %@\n", e.reason];
+                }
+            }
+        } else {
+            [log appendFormat:@"⚠️ AudioSender 无 ResendVoiceMsg 方法\n"];
+        }
+    } else {
+        [log appendString:@"⚠️ AudioSender 服务不存在（新版微信可能改名）\n"];
+    }
 
-        @try {
-            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-            [inv setTarget:svc];
-            [inv setSelector:sel];
-            [inv setArgument:&toUser atIndex:2];
-            [inv setArgument:&msg atIndex:3];
-            [inv invoke];
-            [log appendFormat:@"✅ [%@ %@] 调用成功\n", svcName, selName];
-            return YES;
-        } @catch (NSException *e) {
-            [log appendFormat:@"⚠️ [%@ %@] 异常: %@\n", svcName, selName, e.reason];
+    // 7. 兜底：AddMsg 正式发送通道
+    if (mgr) {
+        SEL addMsg = NSSelectorFromString(@"AddMsg:MsgWrap:");
+        NSMethodSignature *sig = [mgr methodSignatureForSelector:addMsg];
+        if ([mgr respondsToSelector:addMsg] && sig && sig.numberOfArguments - 2 == 2) {
+            const char *t2 = [sig getArgumentTypeAtIndex:2];
+            const char *t3 = [sig getArgumentTypeAtIndex:3];
+            if (t2 && t2[0] == '@' && t3 && t3[0] == '@') {
+                @try {
+                    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                    [inv setTarget:mgr];
+                    [inv setSelector:addMsg];
+                    [inv setArgument:&toUser atIndex:2];
+                    [inv setArgument:&msg atIndex:3];
+                    [inv invoke];
+                    [log appendString:@"✅ AddMsg 兜底通道调用成功\n"];
+                    return YES;
+                } @catch (NSException *e) {
+                    [log appendFormat:@"⚠️ AddMsg 异常: %@\n", e.reason];
+                }
+            }
         }
     }
-    [log appendString:@"❌ 所有发送通道都失败了。\n"];
+
+    if (inserted) {
+        [log appendString:@"◆ 消息已入库但上传未触发，气泡可能仅本地可见\n"];
+        return YES;
+    }
+    [log appendString:@"❌ 发送失败。请用 🐞调试 导出后发我适配。\n"];
     return NO;
     } @catch (NSException *e) {
         [log appendFormat:@"⚠️ 发送过程异常: %@\n", e.reason];
@@ -376,45 +433,6 @@ static void WCVAddBallIfNeeded(UIViewController *vc) {
 
 #pragma mark - Hook 主入口
 
-#pragma mark - 替换模式：拦截原生语音消息，偷梁换柱
-
-// 在 CMessageMgr AddMsg:MsgWrap: 原生流程里调用；armed 且是语音消息时替换音频
-static void WCVInterceptOutgoingVoice(id chatName, id wrap) {
-    if (!WCVPendingSilk || !wrap) return;
-    NSNumber *type = nil;
-    @try { type = [wrap valueForKey:@"m_uiMessageType"]; } @catch (NSException *e) {}
-    if (![type isEqual:@34]) return;   // 只处理语音消息
-
-    WCVSafeSet(wrap, @[@"m_dtVoice", @"nativeVoiceData"], WCVPendingSilk);
-    WCVSafeSet(wrap, @[@"m_uiVoiceFormat", @"m_voiceFormat"], @4);
-    WCVSafeSet(wrap, @[@"m_uiVoiceEndFlag"], @1);
-    WCVSafeSet(wrap, @[@"m_uiVoiceTime", @"m_nVoiceTime"], @(WCVPendingMs));
-
-    // 同步覆盖磁盘上的音频文件（上传管理器从文件读取）
-    Class c = NSClassFromString(@"CMessageWrap");
-    SEL gp = NSSelectorFromString(@"getPathOfMsgImg:");
-    if ([c respondsToSelector:gp]) {
-        @try {
-            NSString *p = [c performSelector:gp withObject:wrap];
-            if ([p isKindOfClass:NSString.class]) {
-                p = [(NSString *)p stringByReplacingOccurrencesOfString:@"Img" withString:@"Audio"];
-                p = [(NSString *)p stringByReplacingOccurrencesOfString:@".pic" withString:@".aud"];
-                [[NSFileManager defaultManager]
-                    createDirectoryAtPath:[p stringByDeletingLastPathComponent]
-                          withIntermediateDirectories:YES attributes:nil error:nil];
-                [WCVPendingSilk writeToFile:p atomically:YES];
-            }
-        } @catch (NSException *e) {}
-    }
-
-    NSLog(@"[WCVoiceClone] 已替换 outgoing voice → %lu ms 克隆语音", (unsigned long)WCVPendingMs);
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIWindow *w = [UIApplication sharedApplication].keyWindow;
-        if (w) WCVShowBannerText(w, @"✅ 已替换为你的克隆语音");
-    });
-    WCVPendingSilk = nil;   // 用完即焚
-}
-
 %hook BaseMsgContentViewController
 
 - (void)viewDidAppear:(BOOL)animated {
@@ -428,12 +446,7 @@ static void WCVInterceptOutgoingVoice(id chatName, id wrap) {
                                                                   message:nil
                                                            preferredStyle:UIAlertControllerStyleActionSheet];
 
-    [menu addAction:[UIAlertAction actionWithTitle:@"🔁 替换模式（推荐）：合成后替换你录的语音"
-                                             style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
-                                                 [self wcv_promptReplace];
-                                             }]];
-
-    [menu addAction:[UIAlertAction actionWithTitle:@"🎤 直接发送克隆语音（实验）"
+    [menu addAction:[UIAlertAction actionWithTitle:@"🎤 输入文字用克隆声音发送"
                                              style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
                                                  [self wcv_promptTTS];
                                              }]];
@@ -635,82 +648,8 @@ static void WCVInterceptOutgoingVoice(id chatName, id wrap) {
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-// 替换模式：合成 → 待命 → 用户手动录音时替换
-%new
-- (void)wcv_promptReplace {
-    if (![WCPrefsManager shared].isConfigured) {
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"还没配置"
-                            message:@"先去「设置」里填 Fish Audio 的 API Key 和声音模型 ID"
-                            preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"去设置" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
-            [self wcv_openSettings];
-        }]];
-        [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-        [self presentViewController:alert animated:YES completion:nil];
-        return;
-    }
 
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"替换模式"
-                            message:@"输入克隆语音要说的文字。\n确认后，请立刻长按“按住说话”随便念点什么，松手后发出的语音会被自动替换成克隆声音。"
-                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *tf) {
-        tf.placeholder = @"例如：好的，稍等一下";
-    }];
-    [alert addAction:[UIAlertAction actionWithTitle:@"开始合成" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
-        NSString *text = alert.textFields.firstObject.text ?: @"";
-        if (text.length == 0) return;
-        [self wcv_synthAndArm:text];
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
-}
 
-%new
-- (void)wcv_synthAndArm:(NSString *)text {
-    UIAlertController *hud = [UIAlertController alertControllerWithTitle:nil
-                            message:@"1/2 合成语音中…" preferredStyle:UIAlertControllerStyleAlert];
-    UIAlertAction *wait = [UIAlertAction actionWithTitle:@"请稍候…" style:UIAlertActionStyleDefault handler:nil];
-    wait.enabled = NO;
-    [hud addAction:wait];
-    [self presentViewController:hud animated:YES completion:nil];
-
-    WCPrefsManager *prefs = [WCPrefsManager shared];
-    [[FAVoiceAPI shared] ttsText:text modelId:prefs.modelId completion:^(NSData *data, NSError *error) {
-        if (error) {
-            [self wcv_replaceHud:hud message:[NSString stringWithFormat:@"❌ 合成失败：%@", error.localizedDescription]];
-            return;
-        }
-        hud.message = @"2/2 SILK 编码中…";
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-            NSError *silkErr = nil;
-            NSData *silk = [WCSilkBridge silkFromPCM:data sampleRateHz:24000 error:&silkErr];
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (!silk) {
-                    [self wcv_replaceHud:hud message:[NSString stringWithFormat:@"❌ SILK 编码失败：%@", silkErr.localizedDescription]];
-                    return;
-                }
-                WCVPendingSilk = silk;
-                WCVPendingMs = (unsigned int)MAX(500, MIN(59000, (double)(silk.length - 9) / (25000.0 / 8) * 1000));
-                [hud dismissViewControllerAnimated:YES completion:^{
-                    UIAlertController *ok = [UIAlertController alertControllerWithTitle:@"✅ 克隆语音已就绪"
-                        message:[NSString stringWithFormat:@"%u 毫秒语音待命。\n现在请长按「按住说话」，随便说句话后松手，发出的将是克隆声音。", WCVPendingMs]
-                        preferredStyle:UIAlertControllerStyleAlert];
-                    [ok addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleCancel handler:nil]];
-                    [self presentViewController:ok animated:YES completion:nil];
-                }];
-            });
-        });
-    }];
-}
-
-%end
-
-// 替换模式的拦截点：原生发送流程的必经之路
-%hook CMessageMgr
-- (void)AddMsg:(id)arg1 MsgWrap:(id)arg2 {
-    %orig;
-    @try { WCVInterceptOutgoingVoice(arg1, arg2); } @catch (NSException *e) {}
-}
 %end
 
 %ctor {
