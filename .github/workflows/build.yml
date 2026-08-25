@@ -36,13 +36,15 @@ jobs:
         run: |
           cd wcvoiceclone
           mkdir -p out
-          echo "== 有根版 rootful =="
+          VER=$(grep '^Version:' control | awk '{print $2}' | tr -d ' ')
+          echo "版本号: $VER"
+          echo "== 有根版: WCVoiceClone_${VER}_iphoneos-arm.deb (双切片) =="
           make package FINALPACKAGE=1
-          mv packages/*.deb out/rootful.deb
+          mv packages/*.deb "out/WCVoiceClone_${VER}_iphoneos-arm.deb"
           make clean >/dev/null
-          echo "== 无根版 rootless (Dopamine) =="
+          echo "== 无根版: WCVoiceClone_${VER}_iphoneos-arm64e.deb (Dopamine) =="
           make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
-          mv packages/*.deb out/rootless.deb
+          cp $(ls packages/*.deb | head -1) "out/WCVoiceClone_${VER}_iphoneos-arm64e.deb"
           ls -la out/
 
       - name: Upload deb
