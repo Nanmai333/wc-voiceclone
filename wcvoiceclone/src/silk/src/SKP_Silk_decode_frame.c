@@ -1,5 +1,5 @@
 /***********************************************************************
-Copyright (c) 2006-2012, Skype Limited. All rights reserved. 
+Copyright (c) 2006-2010, Skype Limited. All rights reserved. 
 Redistribution and use in source and binary forms, with or without 
 modification, (subject to the limitations in the disclaimer below) 
 are permitted provided that the following conditions are met:
@@ -43,7 +43,7 @@ SKP_int SKP_Silk_decode_frame(
 )
 {
     SKP_Silk_decoder_control sDecCtrl;
-    SKP_int         L, fs_Khz_old, ret = 0;
+    SKP_int         L, fs_Khz_old, LPC_order_old, ret = 0;
     SKP_int         Pulses[ MAX_FRAME_LENGTH ];
 
 
@@ -62,23 +62,34 @@ SKP_int SKP_Silk_decode_frame(
         /* Initialize arithmetic coder              */
         /********************************************/
         fs_Khz_old    = psDec->fs_kHz;
+        LPC_order_old = psDec->LPC_order;
         if( psDec->nFramesDecoded == 0 ) {
             /* Initialize range decoder state */
             SKP_Silk_range_dec_init( &psDec->sRC, pCode, nBytes );
+        
+            if( psDec->bitstream_v == BIT_STREAM_V4 ) {
+                SKP_Silk_decode_indices_v4( psDec );
+            }
         }
 
         /********************************************/
         /* Decode parameters and pulse signal       */
         /********************************************/
-        SKP_Silk_decode_parameters( psDec, &sDecCtrl, Pulses, 1 );
+        if( psDec->bitstream_v == BIT_STREAM_V4 ) {
+            SKP_Silk_decode_parameters_v4( psDec, &sDecCtrl, Pulses, 1 );
+        } else {
+            SKP_Silk_decode_parameters( psDec, &sDecCtrl, Pulses, 1 );
+        }
 
 
         if( psDec->sRC.error ) {
             psDec->nBytesLeft = 0;
 
             action              = 1; /* PLC operation */
-            /* revert fs if changed in decode_parameters */
-            SKP_Silk_decoder_set_fs( psDec, fs_Khz_old );
+            psDec->fs_kHz       = fs_Khz_old;    /* revert fs if changed in decode_parameters */
+            psDec->LPC_order    = LPC_order_old; /* revert lpc_order if changed in decode_parameters */
+            psDec->frame_length = fs_Khz_old * FRAME_LENGTH_MS;
+            psDec->subfr_length = fs_Khz_old * FRAME_LENGTH_MS / NB_SUBFR;
 
             /* Avoid crashing */
             *decBytes = psDec->sRC.bufferLength;
@@ -113,11 +124,13 @@ SKP_int SKP_Silk_decode_frame(
         }
     }
     /*************************************************************/
-    /* Generate Concealment frame if packet is lost, or corrupt  */
+    /* Generate Concealment Frame if packet is lost, or corrupt  */
     /*************************************************************/
     if( action == 1 ) {
         /* Handle packet loss by extrapolation */
         SKP_Silk_PLC( psDec, &sDecCtrl, pOut, L, action );
+        psDec->lossCnt++;
+    
     }
 
     /*************************/
@@ -149,7 +162,6 @@ SKP_int SKP_Silk_decode_frame(
 
     /* Update some decoder state variables */
     psDec->lagPrev = sDecCtrl.pitchL[ NB_SUBFR - 1 ];
-
 
     return ret;
 }

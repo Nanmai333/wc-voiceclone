@@ -1,5 +1,5 @@
 /***********************************************************************
-Copyright (c) 2006-2012, Skype Limited. All rights reserved. 
+Copyright (c) 2006-2010, Skype Limited. All rights reserved. 
 Redistribution and use in source and binary forms, with or without 
 modification, (subject to the limitations in the disclaimer below) 
 are permitted provided that the following conditions are met:
@@ -25,11 +25,37 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ***********************************************************************/
 
-#include "SKP_Silk_typedef.h"
+/*                                                                      *
+ * SKP_Silk_lowpass_int.c                                             *
+ *                                                                      *
+ * First order low-pass filter, with input as SKP_int32, running at     *
+ * 48 kHz                                                               *
+ *                                                                      *
+ * Copyright 2006 (c), Skype Limited                                    *
+ * Date: 060221                                                         *
+ *                                                                      */
+#include "SKP_Silk_SigProc_FIX.h"
 
-SKP_int32 SKP_DIV32_arm( SKP_int32 a32, SKP_int32 b32 ) {
-	return ( ( SKP_int32 )( ( a32 ) / ( b32 ) ) );
+/* First order low-pass filter, with input as SKP_int32, running at 48 kHz        */
+void SKP_Silk_lowpass_int(
+    const SKP_int32      *in,            /* I:    Q25 48 kHz signal; length = len */
+    SKP_int32            *S,             /* I/O: Q25 state; length = 1            */
+    SKP_int32            *out,           /* O:    Q25 48 kHz signal; length = len */
+    const SKP_int32      len             /* I:    Number of samples               */
+)
+{
+    SKP_int        k;
+    SKP_int32    in_tmp, out_tmp, state;
+    
+    state = S[ 0 ];
+    for( k = len; k > 0; k-- ) {    
+        in_tmp  = *in++;
+        in_tmp -= SKP_RSHIFT( in_tmp, 2 );              /* multiply by 0.75 */
+        out_tmp = state + in_tmp;                       /* zero at nyquist  */
+        state   = in_tmp - SKP_RSHIFT( out_tmp, 1 );    /* pole             */
+        *out++  = out_tmp;
+    }
+    S[ 0 ] = state;
 }
-
 
 

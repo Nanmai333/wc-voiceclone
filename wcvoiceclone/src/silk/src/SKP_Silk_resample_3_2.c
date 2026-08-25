@@ -1,5 +1,5 @@
 /***********************************************************************
-Copyright (c) 2006-2012, Skype Limited. All rights reserved. 
+Copyright (c) 2006-2010, Skype Limited. All rights reserved. 
 Redistribution and use in source and binary forms, with or without 
 modification, (subject to the limitations in the disclaimer below) 
 are permitted provided that the following conditions are met:
@@ -26,54 +26,48 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ***********************************************************************/
 
 /*                                                                      *
- * SKP_Silk_resampler_down2.c                                         *
+ * File Name:   SKP_Silk_resample_3_2.c                               *
  *                                                                      *
- * Downsample by a factor 2, mediocre quality                           *
+ * Resamples by a factor 3/2                                            *
  *                                                                      *
- * Copyright 2010 (c), Skype Limited                                    *
+ * Copyright 2008 (c), Skype Limited                                    *
+ * All rights reserved.                                                 *
+ *                                                                      *
+ * Date: 081113                                                         *
  *                                                                      */
 
 #include "SKP_Silk_SigProc_FIX.h"
-#include "SKP_Silk_resampler_rom.h"
 
-#if (EMBEDDED_ARM<5) 
-/* Downsample by a factor 2, mediocre quality */
-void SKP_Silk_resampler_down2(
-    SKP_int32                           *S,         /* I/O: State vector [ 2 ]                  */
-    SKP_int16                           *out,       /* O:   Output signal [ len ]               */
-    const SKP_int16                     *in,        /* I:   Input signal [ floor(len/2) ]       */
-    SKP_int32                           inLen       /* I:   Number of input samples             */
+#define IN_SUBFR_LEN_RESAMPLE_3_2       80
+
+/* Resamples by a factor 3/2 */
+void SKP_Silk_resample_3_2(
+    SKP_int16           *out,       /*   O: Fs_high signal  [inLen*3/2]             */
+    SKP_int32           *S,         /* I/O: State vector    [7+4]                   */
+    const SKP_int16     *in,        /* I:   Fs_low signal   [inLen]                 */
+    SKP_int             inLen       /* I:   Input length, must be a multiple of 2   */
 )
 {
-    SKP_int32 k, len2 = SKP_RSHIFT32( inLen, 1 );
-    SKP_int32 in32, out32, Y, X;
+    SKP_int     LSubFrameIn, LSubFrameOut;
+    SKP_int16   outH[      3 * IN_SUBFR_LEN_RESAMPLE_3_2 ];
+    SKP_int32   scratch[ ( 9 * IN_SUBFR_LEN_RESAMPLE_3_2 ) / 2 ];
 
-    SKP_assert( SKP_Silk_resampler_down2_0 > 0 );
-    SKP_assert( SKP_Silk_resampler_down2_1 < 0 );
+    /* Check that input is multiple of 2 */
+    SKP_assert( inLen % 2 == 0 );
 
-    /* Internal variables and state are in Q10 format */
-    for( k = 0; k < len2; k++ ) {
-        /* Convert to Q10 */
-        in32 = SKP_LSHIFT( (SKP_int32)in[ 2 * k ], 10 );
+    while( inLen > 0 ) {
+        LSubFrameIn  = SKP_min_int( IN_SUBFR_LEN_RESAMPLE_3_2, inLen );
+        LSubFrameOut = SKP_SMULWB( 98304, LSubFrameIn );
 
-        /* All-pass section for even input sample */
-        Y      = SKP_SUB32( in32, S[ 0 ] );
-        X      = SKP_SMLAWB( Y, Y, SKP_Silk_resampler_down2_1 );
-        out32  = SKP_ADD32( S[ 0 ], X );
-        S[ 0 ] = SKP_ADD32( in32, X );
+        /* Upsample by a factor 3 */
+        SKP_Silk_resample_3_1( outH, &S[ 0 ], in, LSubFrameIn );
+        
+        /* Downsample by a factor 2 */
+        /* Scratch size needs to be: 3 * LSubFrameOut * sizeof( SKP_int32 ) */
+        SKP_Silk_resample_1_2_coarse( outH, &S[ 7 ], out, scratch, LSubFrameOut );
 
-        /* Convert to Q10 */
-        in32 = SKP_LSHIFT( (SKP_int32)in[ 2 * k + 1 ], 10 );
-
-        /* All-pass section for odd input sample, and add to output of previous section */
-        Y      = SKP_SUB32( in32, S[ 1 ] );
-        X      = SKP_SMULWB( Y, SKP_Silk_resampler_down2_0 );
-        out32  = SKP_ADD32( out32, S[ 1 ] );
-        out32  = SKP_ADD32( out32, X );
-        S[ 1 ] = SKP_ADD32( in32, X );
-
-        /* Add, convert back to int16 and store to output */
-        out[ k ] = (SKP_int16)SKP_SAT16( SKP_RSHIFT_ROUND( out32, 11 ) );
+        in    += LSubFrameIn;
+        out   += LSubFrameOut;
+        inLen -= LSubFrameIn;
     }
 }
-#endif

@@ -1,5 +1,5 @@
 /***********************************************************************
-Copyright (c) 2006-2012, Skype Limited. All rights reserved. 
+Copyright (c) 2006-2010, Skype Limited. All rights reserved. 
 Redistribution and use in source and binary forms, with or without 
 modification, (subject to the limitations in the disclaimer below) 
 are permitted provided that the following conditions are met:
@@ -35,7 +35,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  * Date: 060221                                                         *
  *                                                                      */
 #include "SKP_Silk_SigProc_FIX.h"
-#if EMBEDDED_ARM<4
 /* Approximation of 128 * log2() (very close inverse of approx 2^() below) */
 /* Convert input to a log scale    */ 
 SKP_int32 SKP_Silk_lin2log( const SKP_int32 inLin )    /* I:    Input in linear scale */
@@ -47,5 +46,4 @@ SKP_int32 SKP_Silk_lin2log( const SKP_int32 inLin )    /* I:    Input in linear 
     /* Piece-wise parabolic approximation */
     return( SKP_LSHIFT( 31 - lz, 7 ) + SKP_SMLAWB( frac_Q7, SKP_MUL( frac_Q7, 128 - frac_Q7 ), 179 ) );
 }
-#endif
 

@@ -1,5 +1,5 @@
 /***********************************************************************
-Copyright (c) 2006-2012, Skype Limited. All rights reserved. 
+Copyright (c) 2006-2010, Skype Limited. All rights reserved. 
 Redistribution and use in source and binary forms, with or without 
 modification, (subject to the limitations in the disclaimer below) 
 are permitted provided that the following conditions are met:
@@ -28,8 +28,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 /*                                                                                *
  * SKP_Silk_inner_prod_aligned.c                                                *
  *                                                                                *
- *                                                                          	   *
- * Copyright 2008-2010 (c), Skype Limited                                              *
+ *                                                                                *
+ * Copyright 2008 (c), Skype Limited                                              *
  * Date: 080601                                                                   *
  *                                                                                */
 #include "SKP_Silk_SigProc_FIX.h"
@@ -40,7 +40,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 /*        * len should be positive 16bit integer.                               */
 /*        * only when len>6, memory access can be reduced by half.              */
 
-#if (EMBEDDED_ARM<5) 
 SKP_int32 SKP_Silk_inner_prod_aligned(
     const SKP_int16* const inVec1,  /*    I input vector 1    */
     const SKP_int16* const inVec2,  /*    I input vector 2    */
@@ -54,9 +53,20 @@ SKP_int32 SKP_Silk_inner_prod_aligned(
     }
     return sum;
 }
-#endif
 
-#if (EMBEDDED_ARM<5) 
+SKP_int64 SKP_Silk_inner_prod_aligned_64(
+    const SKP_int32 *inVec1,        /*    I input vector 1    */ 
+    const SKP_int32 *inVec2,        /*    I input vector 2    */
+    const SKP_int   len             /*    I vector lengths    */
+)
+{
+    SKP_int   i; 
+    SKP_int64 sum = 0;
+    for( i = 0; i < len; i++ ) {
+        sum = SKP_SMLAL( sum, inVec1[ i ], inVec2[ i ] );
+    }
+    return sum;
+}
 SKP_int64 SKP_Silk_inner_prod16_aligned_64(
     const SKP_int16 *inVec1,        /*    I input vector 1    */ 
     const SKP_int16 *inVec2,        /*    I input vector 2    */
@@ -70,4 +80,17 @@ SKP_int64 SKP_Silk_inner_prod16_aligned_64(
     }
     return sum;
 }
-#endif
+
+SKP_int32 SKP_Silk_inner_prod16_aligned_sat(
+    const SKP_int16* const inVec1,  /*    I input vector 1  */ 
+    const SKP_int16* const inVec2,  /*    I input vector 2  */
+    const SKP_int    len            /*    I vector lengths  */ 
+)
+{
+    SKP_int   i; 
+    SKP_int32 sum = 0;
+    for( i = 0; i < len; i++ ) {
+        sum = SKP_ADD_SAT32( sum, SKP_SMULBB( inVec1[ i ], inVec2[ i ] ) );
+    }
+    return sum;
+}

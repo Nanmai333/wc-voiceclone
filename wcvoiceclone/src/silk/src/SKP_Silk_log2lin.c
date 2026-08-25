@@ -1,5 +1,5 @@
 /***********************************************************************
-Copyright (c) 2006-2012, Skype Limited. All rights reserved. 
+Copyright (c) 2006-2010, Skype Limited. All rights reserved. 
 Redistribution and use in source and binary forms, with or without 
 modification, (subject to the limitations in the disclaimer below) 
 are permitted provided that the following conditions are met:
@@ -42,10 +42,7 @@ SKP_int32 SKP_Silk_log2lin( const SKP_int32 inLog_Q7 )    /* I:    Input on log 
     SKP_int32 out, frac_Q7;
 
     if( inLog_Q7 < 0 ) {
-        return( 0 );
-    } else if( inLog_Q7 >= ( 31 << 7 ) ) {
-        /* Saturate, and prevent wrap-around */
-        return( SKP_int32_MAX );
+        return 0;
     }
 
     out = SKP_LSHIFT( 1, SKP_RSHIFT( inLog_Q7, 7 ) );

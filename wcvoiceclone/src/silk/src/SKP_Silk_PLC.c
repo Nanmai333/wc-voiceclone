@@ -1,5 +1,5 @@
 /***********************************************************************
-Copyright (c) 2006-2012, Skype Limited. All rights reserved. 
+Copyright (c) 2006-2010, Skype Limited. All rights reserved. 
 Redistribution and use in source and binary forms, with or without 
 modification, (subject to the limitations in the disclaimer below) 
 are permitted provided that the following conditions are met:
@@ -59,8 +59,6 @@ void SKP_Silk_PLC(
         /* Generate Signal          */
         /****************************/
         SKP_Silk_PLC_conceal( psDec, psDecCtrl, signal, length );
-
-        psDec->lossCnt++;
     } else {
         /****************************/
         /* Update state             */
@@ -152,19 +150,13 @@ void SKP_Silk_PLC_conceal(
 {
     SKP_int   i, j, k;
     SKP_int16 *B_Q14, exc_buf[ MAX_FRAME_LENGTH ], *exc_buf_ptr;
-    SKP_int16 rand_scale_Q14;
-    union {
-        SKP_int16 as_int16[ MAX_LPC_ORDER ];
-        SKP_int32 as_int32[ MAX_LPC_ORDER / 2 ];
-    } A_Q12_tmp;
+    SKP_int16 rand_scale_Q14, A_Q12_tmp[ MAX_LPC_ORDER ];
     SKP_int32 rand_seed, harm_Gain_Q15, rand_Gain_Q15;
-    SKP_int   lag, idx, sLTP_buf_idx, shift1, shift2;
-    SKP_int32 energy1, energy2, *rand_ptr, *pred_lag_ptr;
+    SKP_int   lag, idx, shift1, shift2;
+    SKP_int32 energy1, energy2, *rand_ptr, *pred_lag_ptr, Atmp;
     SKP_int32 sig_Q10[ MAX_FRAME_LENGTH ], *sig_Q10_ptr, LPC_exc_Q10, LPC_pred_Q10,  LTP_pred_Q14;
     SKP_Silk_PLC_struct *psPLC;
-#if !defined(_SYSTEM_IS_BIG_ENDIAN)
-    SKP_int32 Atmp;
-#endif
+
     psPLC = &psDec->sPLC;
 
     /* Update LTP buffer */
@@ -187,7 +179,7 @@ void SKP_Silk_PLC_conceal(
     SKP_Silk_sum_sqr_shift( &energy1, &shift1, exc_buf,                         psDec->subfr_length );
     SKP_Silk_sum_sqr_shift( &energy2, &shift2, &exc_buf[ psDec->subfr_length ], psDec->subfr_length );
         
-    if( SKP_RSHIFT( energy1, shift2 ) < SKP_RSHIFT( energy2, shift1 ) ) {
+    if( SKP_RSHIFT( energy1, shift2 ) < SKP_RSHIFT( energy1, shift2 ) ) {
         /* First sub-frame has lowest energy */
         rand_ptr = &psDec->exc_Q10[ SKP_max_int( 0, 3 * psDec->subfr_length - RAND_BUF_SIZE ) ];
     } else {
@@ -234,9 +226,9 @@ void SKP_Silk_PLC_conceal(
         }
     }
 
-    rand_seed    = psPLC->rand_seed;
-    lag          = SKP_RSHIFT_ROUND( psPLC->pitchL_Q8, 8 );
-    sLTP_buf_idx = psDec->frame_length;
+    rand_seed           = psPLC->rand_seed;
+    lag                 = SKP_RSHIFT_ROUND( psPLC->pitchL_Q8, 8 );
+    psDec->sLTP_buf_idx = psDec->frame_length;
 
     /***************************/
     /* LTP synthesis filtering */
@@ -244,7 +236,7 @@ void SKP_Silk_PLC_conceal(
     sig_Q10_ptr = sig_Q10;
     for( k = 0; k < NB_SUBFR; k++ ) {
         /* Setup pointer */
-        pred_lag_ptr = &psDec->sLTP_Q16[ sLTP_buf_idx - lag + LTP_ORDER / 2 ];
+        pred_lag_ptr = &psDec->sLTP_Q16[ psDec->sLTP_buf_idx - lag + LTP_ORDER / 2 ];
         for( i = 0; i < psDec->subfr_length; i++ ) {
             rand_seed = SKP_RAND( rand_seed );
             idx = SKP_RSHIFT( rand_seed, 25 ) & RAND_BUF_MASK;
@@ -262,8 +254,8 @@ void SKP_Silk_PLC_conceal(
             LPC_exc_Q10 = SKP_ADD32( LPC_exc_Q10, SKP_RSHIFT_ROUND( LTP_pred_Q14, 4 ) );  /* Harmonic part */
             
             /* Update states */
-            psDec->sLTP_Q16[ sLTP_buf_idx ] = SKP_LSHIFT( LPC_exc_Q10, 6 );
-            sLTP_buf_idx++;
+            psDec->sLTP_Q16[ psDec->sLTP_buf_idx ] = SKP_LSHIFT( LPC_exc_Q10, 6 );
+            psDec->sLTP_buf_idx++;
                 
             /* Save LPC residual */
             sig_Q10_ptr[ i ] = LPC_exc_Q10;
@@ -287,52 +279,32 @@ void SKP_Silk_PLC_conceal(
     /***************************/
     sig_Q10_ptr = sig_Q10;
     /* Preload LPC coeficients to array on stack. Gives small performance gain */
-    SKP_memcpy( A_Q12_tmp.as_int16, psPLC->prevLPC_Q12, psDec->LPC_order * sizeof( SKP_int16 ) );
+    SKP_memcpy( A_Q12_tmp, psPLC->prevLPC_Q12, psDec->LPC_order * sizeof( SKP_int16 ) );
     SKP_assert( psDec->LPC_order >= 10 ); /* check that unrolling works */
     for( k = 0; k < NB_SUBFR; k++ ) {
         for( i = 0; i < psDec->subfr_length; i++ ){
-            /* partly unrolled */
-#if !defined(_SYSTEM_IS_BIG_ENDIAN)
-            /* NOTE: the code below loads two int16 values in an int32, and multiplies each using the   */
-            /* SMLAWB and SMLAWT instructions. On a big-endian CPU the two int16 variables would be     */
-            /* loaded in reverse order and the code will give the wrong result. In that case swapping   */
-            /* the SMLAWB and SMLAWT instructions should solve the problem.                             */
-            Atmp = A_Q12_tmp.as_int32[ 0 ];    /* read two coefficients at once */
+            /* unrolled */
+            Atmp = *( ( SKP_int32* )&A_Q12_tmp[ 0 ] );    /* read two coefficients at once */
             LPC_pred_Q10 = SKP_SMULWB(               psDec->sLPC_Q14[ MAX_LPC_ORDER + i -  1 ], Atmp );
             LPC_pred_Q10 = SKP_SMLAWT( LPC_pred_Q10, psDec->sLPC_Q14[ MAX_LPC_ORDER + i -  2 ], Atmp );
-            Atmp = A_Q12_tmp.as_int32[ 1 ];
+            Atmp = *( ( SKP_int32* )&A_Q12_tmp[ 2 ] );
             LPC_pred_Q10 = SKP_SMLAWB( LPC_pred_Q10, psDec->sLPC_Q14[ MAX_LPC_ORDER + i -  3 ], Atmp );
             LPC_pred_Q10 = SKP_SMLAWT( LPC_pred_Q10, psDec->sLPC_Q14[ MAX_LPC_ORDER + i -  4 ], Atmp );
-            Atmp = A_Q12_tmp.as_int32[ 2 ];
+            Atmp = *( ( SKP_int32* )&A_Q12_tmp[ 4 ] );
             LPC_pred_Q10 = SKP_SMLAWB( LPC_pred_Q10, psDec->sLPC_Q14[ MAX_LPC_ORDER + i -  5 ], Atmp );
             LPC_pred_Q10 = SKP_SMLAWT( LPC_pred_Q10, psDec->sLPC_Q14[ MAX_LPC_ORDER + i -  6 ], Atmp );
-            Atmp = A_Q12_tmp.as_int32[ 3 ];
+            Atmp = *( ( SKP_int32* )&A_Q12_tmp[ 6 ] );
             LPC_pred_Q10 = SKP_SMLAWB( LPC_pred_Q10, psDec->sLPC_Q14[ MAX_LPC_ORDER + i -  7 ], Atmp );
             LPC_pred_Q10 = SKP_SMLAWT( LPC_pred_Q10, psDec->sLPC_Q14[ MAX_LPC_ORDER + i -  8 ], Atmp );
-            Atmp = A_Q12_tmp.as_int32[ 4 ];
+            Atmp = *( ( SKP_int32* )&A_Q12_tmp[ 8 ] );
             LPC_pred_Q10 = SKP_SMLAWB( LPC_pred_Q10, psDec->sLPC_Q14[ MAX_LPC_ORDER + i -  9 ], Atmp );
             LPC_pred_Q10 = SKP_SMLAWT( LPC_pred_Q10, psDec->sLPC_Q14[ MAX_LPC_ORDER + i - 10 ], Atmp );
             for( j = 10 ; j < psDec->LPC_order ; j+=2 ) {
-                Atmp = A_Q12_tmp.as_int32[ j / 2 ];
+                Atmp = *( ( SKP_int32* )&A_Q12_tmp[ j ] );
                 LPC_pred_Q10 = SKP_SMLAWB( LPC_pred_Q10, psDec->sLPC_Q14[ MAX_LPC_ORDER + i -  1 - j ], Atmp );
                 LPC_pred_Q10 = SKP_SMLAWT( LPC_pred_Q10, psDec->sLPC_Q14[ MAX_LPC_ORDER + i -  2 - j ], Atmp );
             }
-#else
-            LPC_pred_Q10 = SKP_SMULWB(               psDec->sLPC_Q14[ MAX_LPC_ORDER + i -  1 ], A_Q12_tmp.as_int16[ 0 ] );
-            LPC_pred_Q10 = SKP_SMLAWB( LPC_pred_Q10, psDec->sLPC_Q14[ MAX_LPC_ORDER + i -  2 ], A_Q12_tmp.as_int16[ 1 ] );
-            LPC_pred_Q10 = SKP_SMLAWB( LPC_pred_Q10, psDec->sLPC_Q14[ MAX_LPC_ORDER + i -  3 ], A_Q12_tmp.as_int16[ 2 ] );
-            LPC_pred_Q10 = SKP_SMLAWB( LPC_pred_Q10, psDec->sLPC_Q14[ MAX_LPC_ORDER + i -  4 ], A_Q12_tmp.as_int16[ 3 ] );
-            LPC_pred_Q10 = SKP_SMLAWB( LPC_pred_Q10, psDec->sLPC_Q14[ MAX_LPC_ORDER + i -  5 ], A_Q12_tmp.as_int16[ 4 ] );
-            LPC_pred_Q10 = SKP_SMLAWB( LPC_pred_Q10, psDec->sLPC_Q14[ MAX_LPC_ORDER + i -  6 ], A_Q12_tmp.as_int16[ 5 ] );
-            LPC_pred_Q10 = SKP_SMLAWB( LPC_pred_Q10, psDec->sLPC_Q14[ MAX_LPC_ORDER + i -  7 ], A_Q12_tmp.as_int16[ 6 ] );
-            LPC_pred_Q10 = SKP_SMLAWB( LPC_pred_Q10, psDec->sLPC_Q14[ MAX_LPC_ORDER + i -  8 ], A_Q12_tmp.as_int16[ 7 ] );
-            LPC_pred_Q10 = SKP_SMLAWB( LPC_pred_Q10, psDec->sLPC_Q14[ MAX_LPC_ORDER + i -  9 ], A_Q12_tmp.as_int16[ 8 ] );
-            LPC_pred_Q10 = SKP_SMLAWB( LPC_pred_Q10, psDec->sLPC_Q14[ MAX_LPC_ORDER + i - 10 ], A_Q12_tmp.as_int16[ 9 ] );
 
-            for( j = 10; j < psDec->LPC_order; j++ ) {
-                LPC_pred_Q10 = SKP_SMLAWB( LPC_pred_Q10, psDec->sLPC_Q14[ MAX_LPC_ORDER + i - j - 1 ], A_Q12_tmp.as_int16[ j ] );
-            }
-#endif
             /* Add prediction to LPC residual */
             sig_Q10_ptr[ i ] = SKP_ADD32( sig_Q10_ptr[ i ], LPC_pred_Q10 );
                 
@@ -415,4 +387,3 @@ void SKP_Silk_PLC_glue_frames(
 
     }
 }
-

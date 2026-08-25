@@ -1,5 +1,5 @@
 /***********************************************************************
-Copyright (c) 2006-2012, Skype Limited. All rights reserved. 
+Copyright (c) 2006-2010, Skype Limited. All rights reserved. 
 Redistribution and use in source and binary forms, with or without 
 modification, (subject to the limitations in the disclaimer below) 
 are permitted provided that the following conditions are met:
@@ -26,52 +26,49 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ***********************************************************************/
 
 /*                                                                      *
- * SKP_Silk_resampler_up2.c                                           *
+ * SKP_Silk_resample_1_2_coarse.c                                     *
  *                                                                      *
- * Upsample by a factor 2, low quality                                  *
+ * Downsample by a factor 2, coarser                                    *
  *                                                                      *
- * Copyright 2010 (c), Skype Limited                                    *
+ * Copyright 2006 (c), Skype Limited                                    *
+ * Date: 060221                                                         *
  *                                                                      */
-
 #include "SKP_Silk_SigProc_FIX.h"
-#include "SKP_Silk_resampler_rom.h"
 
-/* Upsample by a factor 2, low quality */
-#if EMBEDDED_ARM<5
-void SKP_Silk_resampler_up2(
-    SKP_int32                           *S,         /* I/O: State vector [ 2 ]                  */
-    SKP_int16                           *out,       /* O:   Output signal [ 2 * len ]           */
-    const SKP_int16                     *in,        /* I:   Input signal [ len ]                */
-    SKP_int32                           len         /* I:   Number of input samples             */
+/* downsample by a factor 2, coarser */
+void SKP_Silk_resample_1_2_coarse(
+    const SKP_int16      *in,            /* I:   16 kHz signal [2*len]   */
+    SKP_int32            *S,             /* I/O: State vector [4]        */
+    SKP_int16            *out,           /* O:   8 kHz signal [len]      */
+    SKP_int32            *scratch,       /* I:   Scratch memory [3*len]  */
+    const SKP_int32      len             /* I:   Number of OUTPUT samples*/
 )
 {
-    SKP_int32 k;
-    SKP_int32 in32, out32, Y, X;
+    SKP_int32 k, idx;
+    
+    /* Coefficients for coarser 2-fold resampling */
+    const SKP_int16 A20c[ 2 ] = { 2119, 16663 };
+    const SKP_int16 A21c[ 2 ] = { 8050, 26861 };
 
-    SKP_assert( SKP_Silk_resampler_up2_lq_0 > 0 );
-    SKP_assert( SKP_Silk_resampler_up2_lq_1 < 0 );
-    /* Internal variables and state are in Q10 format */
+    /* De-interleave allpass inputs, and convert Q15 -> Q25 */
     for( k = 0; k < len; k++ ) {
-        /* Convert to Q10 */
-        in32 = SKP_LSHIFT( (SKP_int32)in[ k ], 10 );
+        idx = SKP_LSHIFT( k, 1 );
+        scratch[ k ]       = SKP_LSHIFT( (SKP_int32)in[ idx     ], 10 );
+        scratch[ k + len ] = SKP_LSHIFT( (SKP_int32)in[ idx + 1 ], 10 );
+    }
 
-        /* All-pass section for even output sample */
-        Y      = SKP_SUB32( in32, S[ 0 ] );
-        X      = SKP_SMULWB( Y, SKP_Silk_resampler_up2_lq_0 );
-        out32  = SKP_ADD32( S[ 0 ], X );
-        S[ 0 ] = SKP_ADD32( in32, X );
+    idx = SKP_LSHIFT( len, 1 );
+    /* Allpass filters */
+    SKP_Silk_allpass_int( scratch,       S,     A21c[ 0 ], scratch + idx, len );
+    SKP_Silk_allpass_int( scratch + idx, S + 1, A21c[ 1 ], scratch,       len );
 
-        /* Convert back to int16 and store to output */
-        out[ 2 * k ] = (SKP_int16)SKP_SAT16( SKP_RSHIFT_ROUND( out32, 10 ) );
+    SKP_Silk_allpass_int( scratch + len, S + 2, A20c[ 0 ], scratch + idx, len );
+    SKP_Silk_allpass_int( scratch + idx, S + 3, A20c[ 1 ], scratch + len, len );
 
-        /* All-pass section for odd output sample */
-        Y      = SKP_SUB32( in32, S[ 1 ] );
-        X      = SKP_SMLAWB( Y, Y, SKP_Silk_resampler_up2_lq_1 );
-        out32  = SKP_ADD32( S[ 1 ], X );
-        S[ 1 ] = SKP_ADD32( in32, X );
-
-        /* Convert back to int16 and store to output */
-        out[ 2 * k + 1 ] = (SKP_int16)SKP_SAT16( SKP_RSHIFT_ROUND( out32, 10 ) );
+    /* Add two allpass outputs */
+    for( k = 0; k < len; k++ ) {
+        out[ k ] = (SKP_int16)SKP_SAT16( SKP_RSHIFT_ROUND( scratch[ k ] + scratch[ k + len ], 11 ) );
     }
 }
-#endif
+
+

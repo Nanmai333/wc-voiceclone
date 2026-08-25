@@ -1,5 +1,5 @@
 /***********************************************************************
-Copyright (c) 2006-2012, Skype Limited. All rights reserved. 
+Copyright (c) 2006-2010, Skype Limited. All rights reserved. 
 Redistribution and use in source and binary forms, with or without 
 modification, (subject to the limitations in the disclaimer below) 
 are permitted provided that the following conditions are met:
@@ -26,13 +26,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ***********************************************************************/
 
 /*! \file SKP_Silk_Inlines.h
- *  \brief SKP_Silk_Inlines.h defines inline signal processing functions.
+ *  \brief SigProcFix_Inlines.h defines inline signal processing functions.
  */
 
 #ifndef _SKP_SILK_FIX_INLINES_H_
 #define _SKP_SILK_FIX_INLINES_H_
-
-#include <assert.h>
 
 #ifdef  __cplusplus
 extern "C"
@@ -59,15 +57,20 @@ SKP_INLINE void SKP_Silk_CLZ_FRAC(SKP_int32 in,            /* I: input */
                                     SKP_int32 *lz,           /* O: number of leading zeros */
                                     SKP_int32 *frac_Q7)      /* O: the 7 bits right after the leading one */
 {
-    SKP_int32 lzeros = SKP_Silk_CLZ32(in);
+    SKP_int32 leadingZeros;
 
-    * lz = lzeros;
-    * frac_Q7 = SKP_ROR32(in, 24 - lzeros) & 0x7f;
+    leadingZeros = SKP_Silk_CLZ32(in);
+    *lz = leadingZeros;
+    if( leadingZeros < 24 ) { 
+        *frac_Q7 = SKP_RSHIFT(in, 24 - leadingZeros) & 0x7F;
+    } else {
+        *frac_Q7 = SKP_LSHIFT(in, leadingZeros - 24) & 0x7F;
+    }
 }
 
 /* Approximation of square root                                          */
-/* Accuracy: < +/- 10%  for output values > 15                           */
-/*           < +/- 2.5% for output values > 120                          */
+/* Accuracy: < +/- 10% for output values > 15                            */
+/*             < +/- 2.5% for output values > 120                        */
 SKP_INLINE SKP_int32 SKP_Silk_SQRT_APPROX(SKP_int32 x)
 {
     SKP_int32 y, lz, frac_Q7;
@@ -122,9 +125,9 @@ SKP_INLINE SKP_int32 SKP_Silk_norm32(SKP_int32 a) {
 
 /* Divide two int32 values and return result as int32 in a given Q-domain */
 SKP_INLINE SKP_int32 SKP_DIV32_varQ(    /* O    returns a good approximation of "(a32 << Qres) / b32" */
-    const SKP_int32     a32,            /* I    numerator (Q0)                  */
-    const SKP_int32     b32,            /* I    denominator (Q0)                */
-    const SKP_int       Qres            /* I    Q-domain of result (>= 0)       */
+    const SKP_int32        a32,         /* I    numerator (Q0)                  */
+    const SKP_int32        b32,         /* I    denominator (Q0)                */
+    const SKP_int        Qres           /* I    Q-domain of result (>= 0)       */
 )
 {
     SKP_int   a_headrm, b_headrm, lshift;
@@ -167,15 +170,14 @@ SKP_INLINE SKP_int32 SKP_DIV32_varQ(    /* O    returns a good approximation of 
 
 /* Invert int32 value and return result as int32 in a given Q-domain */
 SKP_INLINE SKP_int32 SKP_INVERSE32_varQ(    /* O    returns a good approximation of "(1 << Qres) / b32" */
-    const SKP_int32     b32,                /* I    denominator (Q0)                */
-    const SKP_int       Qres                /* I    Q-domain of result (> 0)        */
+    const SKP_int32        b32,             /* I    denominator (Q0)                */
+    const SKP_int        Qres               /* I    Q-domain of result (> 0)        */
 )
 {
     SKP_int   b_headrm, lshift;
     SKP_int32 b32_inv, b32_nrm, err_Q32, result;
 
     SKP_assert( b32 != 0 );
-    SKP_assert( b32 != SKP_int32_MIN ); /* SKP_int32_MIN is not handled by SKP_abs */
     SKP_assert( Qres > 0 );
 
     /* Compute number of bits head room and normalize input */
@@ -252,7 +254,7 @@ SKP_INLINE SKP_int32 SKP_Silk_SIN_APPROX_Q24(        /* O    returns approximate
         }
         if( x < 1100 ) {
             /* Special case: high accuracy */
-            return SKP_SMLAWB( -(1 << 24), SKP_MUL( x, x ), 5053 );
+            return SKP_SMLAWB( -1 << 24, SKP_MUL( x, x ), 5053 );
         }
         x = SKP_SMULWB( SKP_LSHIFT( x, 8 ), x );        /* contains x^2 in Q20 */
         y_Q30 = SKP_SMLAWB( -SKP_SIN_APPROX_CONST2, x, -SKP_SIN_APPROX_CONST3 );
@@ -275,4 +277,4 @@ SKP_INLINE SKP_int32 SKP_Silk_COS_APPROX_Q24(        /* O    returns approximate
 }
 #endif
 
-#endif /*_SKP_SILK_FIX_INLINES_H_*/
+#endif //_SKP_SILK_FIX_INLINES_H_

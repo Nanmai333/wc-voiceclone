@@ -1,5 +1,5 @@
 /***********************************************************************
-Copyright (c) 2006-2012, Skype Limited. All rights reserved. 
+Copyright (c) 2006-2010, Skype Limited. All rights reserved. 
 Redistribution and use in source and binary forms, with or without 
 modification, (subject to the limitations in the disclaimer below) 
 are permitted provided that the following conditions are met:
@@ -25,33 +25,22 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ***********************************************************************/
 
-/***********************************************************
-* Pitch analyser function
-********************************************************** */
-#include "SKP_Silk_SigProc_FIX.h"
-#include "SKP_Silk_common_pitch_est_defines.h"
+/*                                                                      *
+ * File Name:   SKP_Silk_resample_3_2_rom.c                           *
+ *                                                                      *
+ * Description: Filter coefficients for FIR polyphase resampling        *
+ *                                                                      *
+ * Copyright 2009 (c), Skype Limited                                    *
+ * All rights reserved.                                                 *
+ *                                                                      *
+ * Date: 090424                                                         *
+ *                                                                      */
 
-void SKP_Silk_decode_pitch(
-    SKP_int          lagIndex,                        /* I                             */
-    SKP_int          contourIndex,                    /* O                             */
-    SKP_int          pitch_lags[],                    /* O 4 pitch values              */
-    SKP_int          Fs_kHz                           /* I sampling frequency (kHz)    */
-)
-{
-    SKP_int lag, i, min_lag;
+#include "SKP_Silk_resample_rom.h"
 
-    min_lag = SKP_SMULBB( PITCH_EST_MIN_LAG_MS, Fs_kHz );
+const SKP_int16 SigProc_Resample_3_2_coarse_INTERPOL[ SigProc_Resample_3_2_coarse_NUM_INTERPOLATORS ][ SigProc_Resample_3_2_coarse_NUM_FIR_COEFS ] = {
+    {    0,     0,     0, 32768,     0,     0,     0,     0 },
+    { -384,  1630, -5217, 26674, 12714, -3572,  1050,  -236 },
+    { -236,  1050, -3572, 12714, 26674, -5217,  1630,  -384 },
+};
 
-    /* Only for 24 / 16 kHz version for now */
-    lag = min_lag + lagIndex;
-    if( Fs_kHz == 8 ) {
-        /* Only a small codebook for 8 khz */
-        for( i = 0; i < PITCH_EST_NB_SUBFR; i++ ) {
-            pitch_lags[ i ] = lag + SKP_Silk_CB_lags_stage2[ i ][ contourIndex ];
-        }
-    } else {
-        for( i = 0; i < PITCH_EST_NB_SUBFR; i++ ) {
-            pitch_lags[ i ] = lag + SKP_Silk_CB_lags_stage3[ i ][ contourIndex ];
-        }
-    }
-}

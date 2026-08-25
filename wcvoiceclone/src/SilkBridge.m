@@ -30,27 +30,17 @@ static NSString * const kErrDomain = @"WCSilkBridge";
         return nil;
     }
 
-    // 2. 配置 + 初始化（顺序必须与官方示例一致：先填参数，再初始化）
+    // 2. 配置 + 初始化（sipdroid 官方 SILK SDK，字段名与新版不同）
     SKP_SILK_SDK_EncControlStruct ctrl;
     memset(&ctrl, 0, sizeof(ctrl));
-    ctrl.API_sampleRate        = rate;      // 24000
-    ctrl.maxInternalSampleRate = 24000;
+    ctrl.sampleRate            = rate;      // 24000
     ctrl.packetSize            = rate / 50; // 20ms 帧
     ctrl.bitRate               = 25000;
     ctrl.packetLossPercentage  = 0;
-    ctrl.complexity            = 2;
+    ctrl.complexity            = 2;         // 最高复杂度，本地已验证稳定
     ctrl.useInBandFEC          = 0;
     ctrl.useDTX                = 0;
     SKP_Silk_SDK_InitEncoder(encState, &ctrl);
-    // 每次 Encode 前确保 control 字段有效
-    ctrl.API_sampleRate        = rate;
-    ctrl.maxInternalSampleRate = 24000;
-    ctrl.packetSize            = rate / 50;
-    ctrl.bitRate               = 25000;
-    ctrl.packetLossPercentage  = 0;
-    ctrl.complexity            = 2;
-    ctrl.useInBandFEC          = 0;
-    ctrl.useDTX                = 0;
 
     // 3. 输出文件头
     NSMutableData *silk = [NSMutableData dataWithData:

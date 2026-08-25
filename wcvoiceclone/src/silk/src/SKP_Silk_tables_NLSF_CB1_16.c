@@ -1,5 +1,5 @@
 /***********************************************************************
-Copyright (c) 2006-2012, Skype Limited. All rights reserved. 
+Copyright (c) 2006-2010, Skype Limited. All rights reserved. 
 Redistribution and use in source and binary forms, with or without 
 modification, (subject to the limitations in the disclaimer below) 
 are permitted provided that the following conditions are met:
@@ -28,12 +28,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 /**********************************************/
 /* This file has been automatically generated */
 /*                                            */
-/* ROM usage:  0.29 + 3.57 kB                 */
+/* ROM usage:   134+1785 Words                */
 /**********************************************/
 
 #include "SKP_Silk_structs.h"
 #include "SKP_Silk_tables_NLSF_CB1_16.h"
-#include "SKP_Silk_tables.h"
 
 const SKP_uint16 SKP_Silk_NLSF_MSVQ_CB1_16_CDF[ NLSF_MSVQ_CB1_16_VECTORS + NLSF_MSVQ_CB1_16_STAGES ] =
 {
