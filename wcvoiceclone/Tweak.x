@@ -217,6 +217,7 @@ static BOOL WCVTrySendVoice(NSData *silk, NSString *toUser, unsigned int duratio
     WCVSafeSet(msg, @[@"m_uiVoiceEndFlag"], @1);
     WCVSafeSet(msg, @[@"m_uiVoiceTime", @"m_nVoiceTime"], @(durationMs));
     WCVSafeSet(msg, @[@"m_nTotalLen"], @(durationMs / 1000));
+    WCVOwnSendUntilTs = [NSDate date].timeIntervalSince1970 + 6;   // 静默窗口：避免捕获探针抓到自己
     WCVSafeSet(msg, @[@"m_dtVoice", @"nativeVoiceData"], silk);
     WCVSafeSet(msg, @[@"m_uiCreateTime"], @((unsigned int)[NSDate date].timeIntervalSince1970));
 
