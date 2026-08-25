@@ -26,7 +26,8 @@
 @end
 
 static BOOL WCVCaptureArmedOnce = YES;   // 启动后首次遇到真实录音时捕获字段
-static double WCVOwnSendUntilTs = 0;      // 我们自己发送后的静默截止时间戳
+static double WCVOwnSendUntilTs = 0;
+static NSString *WCVPendingCanonicalPath = nil; // 本条消息的规范音频路径      // 我们自己发送后的静默截止时间戳
 static void WCVAddBallIfNeeded(UIViewController *vc);
 static void WCVShowBanner(UIWindow *window);
 static NSString *WCVOwnWxId(void);
@@ -45,22 +46,39 @@ static void WCVSafeSet(id obj, NSArray *keys, id value) {
     }
 }
 
-// 获取微信"服务中心"单例：8.0.76 已移除 +[MMServiceCenter defaultCenter]，运行时自动探测新入口
+// 获取微信"服务中心"单例：优先 MMContext（新版），兼容 MMServiceCenter（旧版），
+// 再回退运行时自动探测
 static id WCVServiceCenter(void) {
-    // 方案1: 旧版类方法（兼容老微信）
+    // 方案0: MMContext（新版服务入口，WCVoice 在用）
+    {
+        Class mc = NSClassFromString(@"MMContext");
+        if (mc) {
+            NSArray<NSString *> *sels = @[@"currentContext", @"sharedContext", @"activeContext",
+                                          @"defaultContext", @"sharedInstance", @"defaultCenter"];
+            for (NSString *sn in sels) {
+                SEL s = NSSelectorFromString(sn);
+                if (![mc respondsToSelector:s]) continue;
+                @try {
+                    id c = [mc performSelector:s];
+                    if (c) { NSLog(@"[WCVoiceClone] 服务入口: MMContext %@", sn); return c; }
+                } @catch (NSException *e) {}
+            }
+        }
+    }
+    // 方案1: 旧版 MMServiceCenter.defaultCenter
     Class sc = NSClassFromString(@"MMServiceCenter");
     if (sc && [sc respondsToSelector:NSSelectorFromString(@"defaultCenter")]) {
         id c = nil;
         @try { c = [sc performSelector:NSSelectorFromString(@"defaultCenter")]; } @catch (NSException *e) {}
         if (c) return c;
     }
-    // 方案2: 扫描所有 *ServiceCenter* / MMContext 类，找能响应 getService: 的单例
+    // 方案2: 扫描所有含 ServiceCenter/Context 类的候选单例，找能响应 getService: 的
     unsigned int n = 0;
     Class *list = objc_copyClassList(&n);
     id result = nil;
     for (unsigned int i = 0; i < n && !result; i++) {
         const char *nm = class_getName(list[i]);
-        BOOL candidate = (strstr(nm, "ServiceCenter") != NULL) || (strcmp(nm, "MMContext") == 0);
+        BOOL candidate = (strstr(nm, "ServiceCenter") != NULL) || (strstr(nm, "MMContext") != NULL);
         if (!candidate) continue;
         if (!class_getInstanceMethod(list[i], NSSelectorFromString(@"getService:"))) continue;
         NSArray<NSString *> *singletonNames = @[@"defaultCenter", @"sharedCenter", @"sharedInstance",
@@ -70,10 +88,7 @@ static id WCVServiceCenter(void) {
             if (![list[i] respondsToSelector:s]) continue;
             @try {
                 id c = [list[i] performSelector:s];
-                if (c) {
-                    NSLog(@"[WCVoiceClone] 服务中心: %s 单例方法: %@", nm, selName);
-                    result = c;
-                }
+                if (c) { NSLog(@"[WCVoiceClone] 服务入口探测: %s %@", nm, selName); result = c; }
             } @catch (NSException *e) {}
             if (result) break;
         }
@@ -93,6 +108,7 @@ static id WCVGetService(Class svcClass) {
     @try { svc = [c performSelector:g withObject:svcClass]; } @catch (NSException *e) {}
     return svc;
 }
+
 
 // 判断字符串是否像微信用户 ID（wxid_xx / 自定义号 / xxx@chatroom）
 static BOOL WCVLooksLikeWxId(id v) {
@@ -260,7 +276,7 @@ static BOOL WCVTrySendVoice(NSData *silk, NSString *toUser, unsigned int duratio
         if (ext) {
             NSString *path = WCVAudioExportPath(msg, toUser, durSec, silk);
             if (path) {
-                WCVSafeSet(ext, @[@"m_voicePath"], path);
+                WCVSafeSet(ext, @[@"m_voicePath"], (WCVPendingCanonicalPath ?: path));
                 WCVSafeSet(ext, @[@"m_voiceTime"], @(durSec));       // 秒，与 xml 一致
                 WCVSafeSet(ext, @[@"m_downloadStatus"], @(1));       // 已下载
                 WCVSafeSet(msg, @[@"m_extendInfoWithMsgType"], ext);
@@ -308,6 +324,84 @@ static BOOL WCVTrySendVoice(NSData *silk, NSString *toUser, unsigned int duratio
         else if ([v isKindOfClass:NSNumber.class]) localID = [(NSNumber *)v unsignedIntValue];
     }
     [log appendFormat:@"✓ LocalID=%u 时长=%ums\n", localID, durationMs];
+
+    // 4.5 【关键补全】把 silk 写到 AudioSender 规范路径，并登记进上传队列
+    {
+        Class senderClass0 = NSClassFromString(@"AudioSender");
+        id sender0 = senderClass0 ? WCVGetService(senderClass0) : nil;
+        NSString *canonicalPath = nil;
+        if (sender0 && localID > 0) {
+            SEL gafn = NSSelectorFromString(@"getAudioFileName:LocalID:");
+            NSMethodSignature *sg = [sender0 methodSignatureForSelector:gafn];
+            if ([sender0 respondsToSelector:gafn] && sg && sg.numberOfArguments - 2 == 2) {
+                const char *a2 = [sg getArgumentTypeAtIndex:2];
+                const char *a3 = [sg getArgumentTypeAtIndex:3];
+                if (a2 && a2[0] == '@' && a3 && a3[0] == 'I') {
+                    @try {
+                        NSInvocation *iv = [NSInvocation invocationWithMethodSignature:sg];
+                        [iv setTarget:sender0];
+                        [iv setSelector:gafn];
+                        [iv setArgument:&toUser atIndex:2];
+                        [iv setArgument:&localID atIndex:3];
+                        [iv invoke];
+                        void *rp = NULL;
+                        [iv getReturnValue:&rp];
+                        canonicalPath = (__bridge_transfer NSString *)rp;
+                    } @catch (NSException *e) {}
+                }
+            }
+        }
+        if (canonicalPath.length > 0) {
+            [[NSFileManager defaultManager]
+                createDirectoryAtPath:[canonicalPath stringByDeletingLastPathComponent]
+                      withIntermediateDirectories:YES attributes:nil error:nil];
+            [silk writeToFile:canonicalPath atomically:YES];
+            chmod([canonicalPath UTF8String], 0644);
+            chown([canonicalPath UTF8String], 501, 501);
+            WCVPendingCanonicalPath = canonicalPath;
+            [log appendFormat:@"✓ 规范音频路径=%@\n", canonicalPath];
+        } else {
+            [log appendString:@"⚠️ 未取得规范音频路径\n"];
+        }
+
+        // 登记进 MMNewUploadVoiceMgr 上传队列（等价于录音分片完成的那一下）
+        Class upClass = NSClassFromString(@"MMNewUploadVoiceMgr");
+        id up = upClass ? WCVGetService(upClass) : nil;
+        if (up) {
+            SEL addPart = NSSelectorFromString(@"AddNewPart:LocalID:n64SvrID:Offset:Len:VoiceTime:CreateTime:EndFlag:CancelFlag:VoiceFormat:ForwardFlag:msgSource:");
+            NSMethodSignature *asg = [up methodSignatureForSelector:addPart];
+            if ([up respondsToSelector:addPart] && asg && asg.numberOfArguments - 2 == 12) {
+                @try {
+                    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:asg];
+                    [inv setTarget:up];
+                    [inv setSelector:addPart];
+                    [inv setArgument:&toUser atIndex:2];
+                    [inv setArgument:&localID atIndex:3];
+                    long long svrID = 0;          [inv setArgument:&svrID atIndex:4];
+                    unsigned int offset = 0;      [inv setArgument:&offset atIndex:5];
+                    unsigned int len = (unsigned int)silk.length; [inv setArgument:&len atIndex:6];
+                    unsigned int vTime = durationMs; [inv setArgument:&vTime atIndex:7];
+                    unsigned int cTime = (unsigned int)[NSDate date].timeIntervalSince1970;
+                    [inv setArgument:&cTime atIndex:8];
+                    unsigned int endFlag = 1;     [inv setArgument:&endFlag atIndex:9];
+                    unsigned int cancelFlag = 0;  [inv setArgument:&cancelFlag atIndex:10];
+                    unsigned int vf = 4;          [inv setArgument:&vf atIndex:11];
+                    unsigned int ff = 0;          [inv setArgument:&ff atIndex:12];
+                    id msgSource = @"";
+                    [inv setArgument:&msgSource atIndex:13];
+                    [inv invoke];
+                    [log appendString:@"✓ 已登记上传队列 (AddNewPart)\n"];
+                } @catch (NSException *e) {
+                    [log appendFormat:@"⚠️ AddNewPart 异常: %@\n", e.reason];
+                }
+            } else {
+                [log appendString:@"⚠️ AddNewPart 方法不可用\n"];
+            }
+        } else {
+            [log appendString:@"⚠️ 拿不到 MMNewUploadVoiceMgr\n"];
+        }
+    }
+
 
     // 5.（音频文件已由 WCVAudioExportPath 按规范路径写入，并挂到 extendInfo.voicePath）
 
