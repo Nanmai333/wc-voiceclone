@@ -215,8 +215,8 @@ static BOOL WCVTrySendVoice(NSData *silk, NSString *toUser, unsigned int duratio
     WCVSafeSet(msg, @[@"m_nsContent"], @"[语音]");
     WCVSafeSet(msg, @[@"m_uiVoiceFormat", @"m_voiceFormat", @"m_cVoiceFormat"], @4);
     WCVSafeSet(msg, @[@"m_uiVoiceEndFlag"], @1);
-    WCVSafeSet(msg, @[@"m_uiVoiceTime", @"m_nVoiceTime"], @(durationSec * 1000));
-    WCVSafeSet(msg, @[@"m_nTotalLen"], @(durationSec));
+    WCVSafeSet(msg, @[@"m_uiVoiceTime", @"m_nVoiceTime"], @(durationMs));
+    WCVSafeSet(msg, @[@"m_nTotalLen"], @(durationMs / 1000));
     WCVSafeSet(msg, @[@"m_dtVoice", @"nativeVoiceData"], silk);
     WCVSafeSet(msg, @[@"m_uiCreateTime"], @((unsigned int)[NSDate date].timeIntervalSince1970));
 
