@@ -4,6 +4,8 @@
 #import <objc/runtime.h>
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <sys/stat.h>
 #import "src/PrefsManager.h"
 #import "src/FAVoiceAPI.h"
 #import "src/SilkBridge.h"
@@ -195,10 +197,10 @@ static NSString *WCVAudioExportPath(id msg, NSString *toUser, unsigned int durSe
     NSString *full = [voiceDir stringByAppendingPathComponent:
                       [NSString stringWithFormat:@"msg_%u.silk", ts]];
     [silk writeToFile:full atomically:YES];
-    // 权限修复（最重要）
+    // 权限修复（最重要）：用 POSIX 函数，不用被禁用的 system()
     @try {
-        system([[NSString stringWithFormat:@"chown mobile:mobile %@", full] UTF8String]);
-        system([[NSString stringWithFormat:@"chmod 644 %@", full] UTF8String]);
+        chmod([full UTF8String], 0644);
+        chown([full UTF8String], 501, 501);   // mobile uid/gid 通常 501
     } @catch (NSException *e) {}
     return full;
 }
