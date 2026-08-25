@@ -39,6 +39,55 @@ static void WCVSafeSet(id obj, NSArray *keys, id value) {
     }
 }
 
+// 获取微信"服务中心"单例：8.0.76 已移除 +[MMServiceCenter defaultCenter]，运行时自动探测新入口
+static id WCVServiceCenter(void) {
+    // 方案1: 旧版类方法（兼容老微信）
+    Class sc = NSClassFromString(@"MMServiceCenter");
+    if (sc && [sc respondsToSelector:NSSelectorFromString(@"defaultCenter")]) {
+        id c = nil;
+        @try { c = [sc performSelector:NSSelectorFromString(@"defaultCenter")]; } @catch (NSException *e) {}
+        if (c) return c;
+    }
+    // 方案2: 扫描所有 *ServiceCenter* / MMContext 类，找能响应 getService: 的单例
+    unsigned int n = 0;
+    Class *list = objc_copyClassList(&n);
+    id result = nil;
+    for (unsigned int i = 0; i < n && !result; i++) {
+        const char *nm = class_getName(list[i]);
+        BOOL candidate = (strstr(nm, "ServiceCenter") != NULL) || (strcmp(nm, "MMContext") == 0);
+        if (!candidate) continue;
+        if (!class_getInstanceMethod(list[i], NSSelectorFromString(@"getService:"))) continue;
+        NSArray<NSString *> *singletonNames = @[@"defaultCenter", @"sharedCenter", @"sharedInstance",
+                                                @"shared", @"currentContext", @"activeContext", @"current"];
+        for (NSString *selName in singletonNames) {
+            SEL s = NSSelectorFromString(selName);
+            if (![list[i] respondsToSelector:s]) continue;
+            @try {
+                id c = [list[i] performSelector:s];
+                if (c) {
+                    NSLog(@"[WCVoiceClone] 服务中心: %s 单例方法: %@", nm, selName);
+                    result = c;
+                }
+            } @catch (NSException *e) {}
+            if (result) break;
+        }
+    }
+    free(list);
+    return result;
+}
+
+// 安全取服务实例
+static id WCVGetService(Class svcClass) {
+    if (!svcClass) return nil;
+    id c = WCVServiceCenter();
+    if (!c) return nil;
+    SEL g = NSSelectorFromString(@"getService:");
+    if (![c respondsToSelector:g]) return nil;
+    id svc = nil;
+    @try { svc = [c performSelector:g withObject:svcClass]; } @catch (NSException *e) {}
+    return svc;
+}
+
 // 判断字符串是否像微信用户 ID（wxid_xx / 自定义号 / xxx@chatroom）
 static BOOL WCVLooksLikeWxId(id v) {
     if (![v isKindOfClass:NSString.class]) return NO;
@@ -98,16 +147,10 @@ static NSString *WCVCurrentChatUser(UIViewController *vc) {
 
 // 自己的 wxid
 static NSString *WCVOwnWxId(void) {
-    Class mmCenter = NSClassFromString(@"MMServiceCenter");
-    if (!mmCenter) return nil;
-    id center = [mmCenter performSelector:NSSelectorFromString(@"defaultCenter")];
-    if (!center) return nil;
     for (NSString *svcName in @[@"CAccountMgr", @"CContactMgr"]) {
         Class svcClass = NSClassFromString(svcName);
         if (!svcClass) continue;
-        id mgr = nil;
-        @try { mgr = [center performSelector:NSSelectorFromString(@"getService:") withObject:svcClass]; }
-        @catch (NSException *e) {}
+        id mgr = WCVGetService(svcClass);
         if (!mgr) continue;
         // 直接在 mgr 上找，或在 selfContact 上找
         NSArray<NSArray<NSString *> *> *paths = @[
@@ -136,15 +179,13 @@ typedef void (^WCVDoneBlock)(BOOL ok, NSString *log);
 static BOOL WCVTrySendVoice(NSData *silk, NSString *toUser, unsigned int durationSec, NSMutableString *log) {
     Class msgWrapClass = NSClassFromString(@"CMessageWrap");
     Class mgrClass     = NSClassFromString(@"CMessageMgr");
-    Class mmCenter     = NSClassFromString(@"MMServiceCenter");
-    if (!msgWrapClass || !mgrClass || !mmCenter) {
+    if (!msgWrapClass || !mgrClass) {
         [log appendString:@"缺少核心类 CMessageWrap/CMessageMgr\n"];
         return NO;
     }
-    id center = [mmCenter performSelector:NSSelectorFromString(@"defaultCenter")];
-    if (!center) { [log appendString:@"拿不到 MMServiceCenter\n"]; return NO; }
-    id mgr = [center performSelector:NSSelectorFromString(@"getService:") withObject:mgrClass];
-    if (!mgr) { [log appendString:@"拿不到 CMessageMgr 服务\n"]; return NO; }
+    @try {
+    id mgr = WCVGetService(mgrClass);
+    if (!mgr) { [log appendString:@"拿不到 CMessageMgr 服务（服务中心探测失败）\n"]; return NO; }
 
     id msg = [[msgWrapClass alloc] init];
     WCVSafeSet(msg, @[@"m_uiMessageType", @"m_iMessageType"], @34);          // 34=语音
@@ -189,6 +230,10 @@ static BOOL WCVTrySendVoice(NSData *silk, NSString *toUser, unsigned int duratio
     }
     [log appendString:@"❌ 发送失败。\n"];
     return NO;
+    } @catch (NSException *e) {
+        [log appendFormat:@"⚠️ 发送过程异常: %@\n", e.reason];
+        return NO;
+    }
 }
 
 #pragma mark - 自检横幅 + 运行时适配不同微信版本的聊天类
