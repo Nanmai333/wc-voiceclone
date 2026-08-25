@@ -16,6 +16,7 @@
 - (void)wcv_ballTapped;
 - (void)wcv_promptTTS;
 - (void)wcv_promptReplace;
+- (void)wcv_synthAndArm:(NSString *)text;
 - (void)wcv_synthAndSend:(NSString *)text;
 - (void)wcv_replaceHud:(UIViewController *)hud message:(NSString *)message;
 - (void)wcv_testAPI;
