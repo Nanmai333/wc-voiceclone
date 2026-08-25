@@ -42,9 +42,9 @@ jobs:
           make package FINALPACKAGE=1
           mv packages/*.deb "out/WCVoiceClone_${VER}_iphoneos-arm.deb"
           make clean >/dev/null
-          echo "== 无根版: WCVoiceClone_${VER}_iphoneos-arm64e.deb (Dopamine) =="
+          echo "== 无根版: WCVoiceClone_${VER}_iphoneos-arm64.deb (Dopamine) =="
           make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
-          cp $(ls packages/*.deb | head -1) "out/WCVoiceClone_${VER}_iphoneos-arm64e.deb"
+          cp $(ls packages/*.deb | head -1) "out/WCVoiceClone_${VER}_iphoneos-arm64.deb"
           ls -la out/
 
       - name: Upload deb
