@@ -12,8 +12,7 @@ WCVoiceClone_FILES = Tweak.x \
 	$(wildcard src/silk/src/*.c)
 
 WCVoiceClone_CFLAGS = -fobjc-arc -Isrc/silk/interface -DHAVE_SILK \
-	-Wno-shift-negative-value -Wno-unused-parameter \
-	-Wno-unused-but-set-variable -Wno-old-style-declaration
+	-Wno-shift-negative-value -Wno-unused-parameter
 WCVoiceClone_FRAMEWORKS = UIKit Foundation CoreFoundation
 
 include $(THEOS_MAKE_PATH)/tweak.mk
